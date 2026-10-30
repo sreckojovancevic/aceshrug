@@ -76,6 +76,19 @@ Tokom razvoja ideje autor je došao do zaključka da October CMS već ima sličn
 
 Ukratko: `.htaccess` kaže koje putanje postoje, a ACESHRUG kaže šta sme da se izvrši i da li je to i dalje isti kod. Mogu se koristiti zajedno.
 
+### Ostali srodni pristupi
+
+Pojedini delovi ACESHRUG-a imaju poznate pretke:
+
+| Pristup | Primeri | Odnos prema ACESHRUG-u |
+|---|---|---|
+| Positive security model (dozvoljeno samo ono što je deklarisano) | ModSecurity u allowlist režimu, validacija prema OpenAPI šemi | šema parametara po ruti je ista ideja, sprovedena unutar PHP-a |
+| Praćenje integriteta fajlova | Tripwire, AIDE | hash fajlova periodično, prijava posle izmene; ACESHRUG proverava hash pre svakog izvršavanja i može da blokira |
+| PHP ekstenzije za ojačavanje | Snuffleupagus, Suhosin | ojačavaju sam PHP (zabrana funkcija, `eval`, upload); dopunjuju se |
+| Ograničenja PHP-a | php-fpm `security.limit_extensions`, `open_basedir`, `disable_functions` | grube granice na nivou PHP-a; dopunjuju se |
+
+Novo u ACESHRUG-u je kombinacija: aplikacija deklariše sebe, runtime se zaključava na tu deklaraciju, sve van nje dobija isti prazan odgovor (SHRUG), a signal ostaje unutra. Plus pravilo da je ovo strategija, nezavisna od jezika.
+
 ---
 
 ## Brzi početak (monitor režim, Apache + mod_php)

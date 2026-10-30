@@ -74,6 +74,19 @@ While developing the idea, the author found that October CMS already ships somet
 
 In short: `.htaccess` says which paths exist; ACESHRUG says what may execute and whether it is still the same code. The two can be used together.
 
+### Other related approaches
+
+Individual parts of ACESHRUG have well-known predecessors:
+
+| Approach | Examples | Relation to ACESHRUG |
+|---|---|---|
+| Positive security model (allow only what is declared) | ModSecurity in allowlist mode, OpenAPI schema validation | the per-route parameter schema is the same idea, enforced inside PHP |
+| File integrity monitoring | Tripwire, AIDE | they hash files periodically and report after the fact; ACESHRUG checks the hash before every execution and can block |
+| PHP hardening extensions | Snuffleupagus, Suhosin | harden PHP itself (function bans, `eval`, uploads); complementary |
+| PHP runtime restrictions | php-fpm `security.limit_extensions`, `open_basedir`, `disable_functions` | coarse limits at the PHP level; complementary |
+
+What is new in ACESHRUG is the combination: the application declares itself, the runtime is locked to that declaration, everything outside it gets the same empty response (SHRUG), and the signal stays inside. And the rule that this is a strategy, independent of language.
+
 ---
 
 ## Quick start (monitor mode, Apache + mod_php)
