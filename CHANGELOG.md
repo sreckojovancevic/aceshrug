@@ -2,7 +2,14 @@
 
 Verzije builder-a (`builder/aceshrug_build.py`). Svaka verzija je pregledana i pokrenuta. Od v0.2.11 nadalje provera uključuje i testove sa namerno pokvarenim gate-om, koji proveravaju da smoke test zaista hvata kvar.
 
-## v0.3.2 (trenutna)
+## v0.3.3 (trenutna)
+- **`$_REQUEST` pri `null` politici:** posle uklanjanja parametra vrednost u `$_REQUEST` se ponovo izvodi iz preostalih izvora po `request_order`/`variables_order`. U v0.3.2 se gledalo samo da li ključ postoji u drugom izvoru, pa je `$_REQUEST` mogao zadržati odbačenu vrednost (GET `x` deklarisan, POST `x` odbačen).
+- **Reklasifikacija ruta → include:** odluka za rutu čiji je fajl sada include više se ne prijavljuje kao "ruta više ne postoji". Prikazuje se kao poseban događaj u REPORT-u, a u enforcement režimu zaustavlja build (kod 4; opt-out `--accept-reclassified`). Semantika je zapisana: odluka za rutu važi za entrypoint, ne za izvršavanje kroz include.
+- Enforcement sa novim rutama bez odluke: upozorenje i lista u REPORT-u; uputstvo jasno razdvaja podrazumevanu garanciju od `--strict`.
+- Smoke test: tri scenarija kolizije izvora (uključujući `request_order=PGC`); fixture gradi `$_REQUEST` kao PHP.
+- Provereno sa 4 nova namerno pokvarena gate-a (stara v0.3.2 logika, bez sinhronizacije, obrnut redosled, ignorisan `request_order`): svi odbijeni.
+
+## v0.3.2
 Politika odluka i aktivacije, bez novih funkcija. Pravilo: promena koda može tražiti novo odobrenje, ali ne sme neprimetno pretvoriti zabranu u propuštanje.
 - **`rejected` ostaje `rejected`** posle izmene fajla (ruta i parametri). U v0.3.1 zastarela `rejected` ruta postajala je `auto`, pa se u enforcement režimu propuštala.
 - **`confirmed` ruta mora imati `sha256`.** Bez hash-a potvrda bi važila i za buduće izmene koda.

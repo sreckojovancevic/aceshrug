@@ -6,7 +6,7 @@
 
 [Srpski / Serbian](README.sr.md)
 
-Status: **v0.3.2, experimental.** Monitor mode has been tested on a production PHP application (Apache + mod_php, PHP 8.3). Enforcement mode is not production-ready yet.
+Status: **v0.3.3, experimental.** Monitor mode has been tested on a production PHP application (Apache + mod_php, PHP 8.3). Enforcement mode is not production-ready yet.
 
 ---
 

@@ -1,4 +1,4 @@
-# ACESHRUG builder: uputstvo (v0.3.2)
+# ACESHRUG builder: uputstvo (v0.3.3)
 
 Builder analizira PHP aplikaciju i u direktorijumu **van webroot-a** pravi gatekeeper (`gate.php`), ugovor (`manifest.php`), šablon php-fpm pool-a (`pool.conf`) i izveštaj (`REPORT.md`). **Kod aplikacije ostaje netaknut**: gate se uključuje preko `auto_prepend_file`.
 
@@ -40,6 +40,7 @@ sudo python3 builder/aceshrug_build.py \
 | `--decisions PATH` | fajl sa ljudskim odlukama (podrazumevano `<output>.decisions.json`) |
 | `--export-decisions` | pravi decisions fajl iz trenutno aktivnog manifesta i izlazi (`--input` nije potreban) |
 | `--strict` | odbija aktivaciju dok postoji ijedna `auto` stavka |
+| `--accept-reclassified` | u enforcement režimu ipak aktivira kada se odluka za rutu odnosi na fajl koji je sada include |
 | `--accept-stale` | u enforcement režimu ipak aktivira kada su neke potvrde zastarele (te rute prelaze u `auto`) |
 
 ### Šta builder radi, redom
@@ -59,7 +60,7 @@ sudo python3 builder/aceshrug_build.py \
 | `1` | greška; aktivna verzija nije dirana |
 | `2` | blokeri u kodu; ništa nije napravljeno |
 | `3` | aktivirano u monitor režimu; postoje `auto` stavke (uobičajeno posle svakog build-a) |
-| `4` | enforcement, a potvrđene rute su promenjene od pregleda; aktivna verzija nije dirana (vidi tačku 7) |
+| `4` | enforcement, a odluke traže pregled (promenjena potvrđena ruta ili ruta koja je postala include); aktivna verzija nije dirana (vidi tačku 7) |
 
 ---
 
@@ -207,7 +208,19 @@ Postupak:
 - **`rejected` ostaje `rejected`** i posle izmene fajla (ruta i parametri). Promena koda može tražiti novo odobrenje, ali nikad ne pretvara zabranu u propuštanje.
 - **U enforcement režimu zastarela potvrda zaustavlja build** (kod 4) i aktivna verzija ostaje. Rešenje: pregledati izmenu i upisati novi `sha256`, ili svesno pokrenuti sa `--accept-stale`.
 
-**Politika `null` za nepoznate parametre:** u monitor režimu samo signal (`logged_allow_would_drop`), ulaz se ne menja. U enforcement režimu, na potvrđenoj ruti, parametar se uklanja iz `$_GET`/`$_POST`/`$_COOKIE` i iz `$_REQUEST` (osim ako isti ključ postoji u drugom izvoru).
+**Šta znači odluka za rutu:** `confirmed`/`rejected` u `routes` odnosi se na fajl kao **entrypoint** (direktan poziv). Ne zabranjuje izvršavanje tog fajla kroz `include`/`require`. Ako analiza fajl sa odlukom za rutu sada vidi kao include (na primer neko je dodao `require 'blocked.php'`), to je **reklasifikacija**: u monitor režimu upozorenje i sekcija u REPORT-u, a u enforcement režimu build staje (kod 4) dok se ne pregleda ili ne pokrene sa `--accept-reclassified`.
+
+**Dve garancije, dve zastavice:**
+
+| | Podrazumevano | `--strict` |
+|---|---|---|
+| promenjena potvrđena ruta | enforcement ne aktivira (kod 4) | ne aktivira |
+| ruta postala include | enforcement ne aktivira (kod 4) | ne aktivira |
+| **nov fajl bez odluke** | aktivira kao `auto` (samo signal), upozorenje + lista u REPORT-u | **ne aktivira** (kod 3) |
+
+Podrazumevano ponašanje dozvoljava postepeno uvođenje enforcement-a. Za potpuno zaključan ugovor, gde nijedan nepregledan fajl ne sme da prođe, obavezan je `--strict`.
+
+**Politika `null` za nepoznate parametre:** u monitor režimu samo signal (`logged_allow_would_drop`), ulaz se ne menja. U enforcement režimu, na potvrđenoj ruti, parametar se uklanja iz svog izvora, a `$_REQUEST[ključ]` se ponovo izvodi iz preostalih izvora istim redosledom kao PHP (`request_order`, inače `variables_order`). Ako ključ nema nijedan izvor, uklanja se. Tako `$_REQUEST` nikad ne zadržava odbačenu vrednost.
 
 Enforcement se može uvoditi postepeno: rute koje ostanu `auto` i dalje samo daju signal.
 
@@ -235,8 +248,11 @@ Pre aktivacije builder pravi izolovanu probnu aplikaciju i pokreće stvarni `gat
 | 12 | `null` politika, monitor | parametar ostaje, `logged_allow_would_drop` |
 | 13 | `null` politika, enforcement, `auto` ruta | parametar ostaje, `logged_allow_would_drop` |
 | 14 | `null` politika, enforcement, `confirmed` ruta | parametar uklonjen iz `$_GET` i `$_REQUEST`, `unknown_parameter_dropped` |
+| 15 | kolizija: GET `x` deklarisan, POST `x` odbačen | `$_REQUEST['x']` = GET vrednost |
+| 16 | kolizija: POST `x` deklarisan, GET `x` odbačen | `$_REQUEST['x']` = POST vrednost |
+| 17 | `request_order=PGC`, `x` u GET i POST, COOKIE `x` odbačen | `$_REQUEST['x']` = GET vrednost (poslednja po redosledu) |
 
-Provereno je da build odbija gate sa namerno ubačenim kvarovima: bez signala, bez prepoznavanja ruta, bez provere hash-a, monitor koji blokira, `rejected` koji blokira u monitoru, ignorisanje statusa, nikad ne blokira, `null` koji briše u monitoru, `null` koji nikad ne briše, `$_REQUEST` koji ostaje netaknut, parametarski prekršaj bez blokade.
+Provereno je da build odbija gate sa namerno ubačenim kvarovima: bez signala, bez prepoznavanja ruta, bez provere hash-a, monitor koji blokira, `rejected` koji blokira u monitoru, ignorisanje statusa, nikad ne blokira, `null` koji briše u monitoru, `null` koji nikad ne briše, `$_REQUEST` koji ostaje netaknut, `$_REQUEST` koji gleda samo prisustvo ključa (stara v0.3.2 logika), obrnut redosled izvora, ignorisan `request_order`, parametarski prekršaj bez blokade.
 
 ---
 
