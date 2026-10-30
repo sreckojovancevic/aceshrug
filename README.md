@@ -126,4 +126,5 @@ See [LICENSE](LICENSE) and [LICENSE-EXCEPTION.md](LICENSE-EXCEPTION.md).
 ## Acknowledgments
 
 - **Gemini (Google)**: base code of the builder and the gatekeeper
+- **ChatGPT (OpenAI)**: review and suggestions
 - **Claude (Anthropic)**: elaboration of the concept and architecture, code review and testing (smoke matrix, tests with deliberately broken gates), `tools/aceshrug_gen.py`, documentation

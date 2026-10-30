@@ -128,4 +128,5 @@ Vidi [LICENSE](LICENSE) i [LICENSE-EXCEPTION.md](LICENSE-EXCEPTION.md).
 ## Acknowledgments
 
 - **Gemini (Google)**: osnova koda builder-a i gatekeeper-a
+- **ChatGPT (OpenAI)**: pregled i predlozi
 - **Claude (Anthropic)**: elaboracija koncepta i arhitekture, pregled i testiranje koda (smoke matrica, testovi sa namerno pokvarenim gate-om), `tools/aceshrug_gen.py`, dokumentacija
