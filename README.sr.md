@@ -8,7 +8,7 @@
 
 [English](README.md)
 
-Status: **v0.3.3, eksperimentalno.** Monitor režim je proveren na produkcionoj PHP aplikaciji (Apache + mod_php, PHP 8.3). Enforcement režim još nije za produkciju.
+Status: **v0.3.4, eksperimentalno.** Monitor režim je proveren na produkcionoj PHP aplikaciji (Apache + mod_php, PHP 8.3). Enforcement režim još nije za produkciju.
 
 ---
 
@@ -87,11 +87,13 @@ Detaljno uputstvo, sa tumačenjem signala i prelaskom na enforcement: [docs/BUIL
 
 Tok ljudskog pregleda:
 ```bash
-# posle pregleda signala zapisati odluke (ručno u JSON, ili izvoz iz izmenjenog manifesta)
-sudo python3 builder/aceshrug_build.py --output /etc/aceshrug/app --export-decisions
-sudoedit /etc/aceshrug/app.decisions.json      # status: confirmed / rejected, mode: enforcement
-sudo python3 builder/aceshrug_build.py --input /var/www/html/app --output /etc/aceshrug/app
+# posle pregleda signala: potvrdi / odbij rute (status + trenutni sha256 idu u app.decisions.json)
+sudo python3 builder/aceshrug_build.py --input /var/www/html/app --output /etc/aceshrug/app \
+    --confirm login.php --reject an1.php --reload apache
+# prelazak na enforcement: "mode": "enforcement" u /etc/aceshrug/app.decisions.json, pa rebuild
 ```
+
+Posle svakog deploy-a aplikacije ponovi build sa `--reload apache` (ili `--reload fpm:<servis>`). Hash ulaznog fajla je dokaz da radi pregledani kod, pa namerna izmena traži novi build. Reload čini da PHP odmah koristi novu verziju.
 
 ---
 

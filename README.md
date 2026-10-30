@@ -6,7 +6,7 @@
 
 [Srpski / Serbian](README.sr.md)
 
-Status: **v0.3.3, experimental.** Monitor mode has been tested on a production PHP application (Apache + mod_php, PHP 8.3). Enforcement mode is not production-ready yet.
+Status: **v0.3.4, experimental.** Monitor mode has been tested on a production PHP application (Apache + mod_php, PHP 8.3). Enforcement mode is not production-ready yet.
 
 ---
 
@@ -85,11 +85,13 @@ Detailed guide, including how to read signals and switch to enforcement: [docs/B
 
 Human review workflow:
 ```bash
-# after reviewing signals, record decisions (edit the JSON, or export from an edited manifest)
-sudo python3 builder/aceshrug_build.py --output /etc/aceshrug/app --export-decisions
-sudoedit /etc/aceshrug/app.decisions.json      # status: confirmed / rejected, mode: enforcement
-sudo python3 builder/aceshrug_build.py --input /var/www/html/app --output /etc/aceshrug/app
+# after reviewing signals: confirm / reject routes (status + current sha256 go to app.decisions.json)
+sudo python3 builder/aceshrug_build.py --input /var/www/html/app --output /etc/aceshrug/app \
+    --confirm login.php --reject an1.php --reload apache
+# switch to enforcement: set "mode": "enforcement" in /etc/aceshrug/app.decisions.json, then rebuild
 ```
+
+After every deploy of the application, rebuild with `--reload apache` (or `--reload fpm:<service>`). The entry-file hash is the proof that reviewed code is running, so intentional changes need a new build. The reload makes PHP pick up the new version immediately.
 
 ---
 

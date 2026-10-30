@@ -36,7 +36,7 @@ Neinteraktivni režim ostaje za CI: svako pitanje ima i odgovarajuću opciju (`-
 ## Kasnije
 
 - Integracija `tools/aceshrug_gen.py` u builder (parser umesto regex-a; `filter_input`, `__DIR__` include, parametri kroz include lanac).
-- Korak potvrđivanja (`--confirm`): prelazak `auto` → `confirmed` po stavkama.
+- Potvrđivanje parametara iz komandne linije (rute već imaju `--confirm`/`--reject` od v0.3.4).
 - Odvojiti "fajl sme biti uključen" od "fajl sme biti direktno pozvan" (sada je fajl ili ruta ili include, po heuristici), i graf zavisnosti po ruti.
 - HTTP smoke test (status, telo, zaglavlja, metode) uz postojeći CLI test.
 - `disable_functions` (allowlist) i `open_basedir` u generisanoj konfiguraciji.

@@ -14,10 +14,10 @@ import uuid
 import fcntl
 from datetime import datetime, timezone
 
-# --- GATEKEEPER STUB (v0.3.3 - Enterprise Hardened RASP) ---
+# --- GATEKEEPER STUB (v0.3.4 - Enterprise Hardened RASP) ---
 GATE_PHP_STUB = """<?php
 /**
- * ACESHRUG Gatekeeper v0.3.3 (Enterprise Hardened Runtime)
+ * ACESHRUG Gatekeeper v0.3.4 (Enterprise Hardened Runtime)
  * Učitava se preko auto_prepend_file. Koristi keširani manifest.php.
  */
 if (defined('ACESHRUG_GATE')) {
@@ -602,6 +602,63 @@ def apply_decisions(routes, decisions, includes=None):
     return applied, stale, missing, has_auto, reclassified
 
 
+def save_decisions(decisions, decisions_path):
+    """Atomski upis decisions fajla (samo na eksplicitan zahtev: --confirm/--reject), uz .bak prethodnog."""
+    if os.path.exists(decisions_path):
+        shutil.copy2(decisions_path, decisions_path + ".bak")
+    tmp = decisions_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(decisions, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, decisions_path)
+
+
+def mark_routes(decisions, routes, includes, input_path, files, status):
+    """Upisuje odluku (confirmed/rejected) sa trenutnim sha256 za navedene rute. Vraca listu gresaka."""
+    errs = []
+    for f in files:
+        full = os.path.realpath(f if os.path.isabs(f) else os.path.join(input_path, f))
+        rp = os.path.relpath(full, input_path)
+        if rp.startswith(".."):
+            errs.append(f"{f}: nije unutar --input"); continue
+        if rp not in routes:
+            if includes and rp in includes:
+                errs.append(f"{rp}: analiza ga vidi kao include, ne kao rutu (odluka za rutu na njega ne bi delovala)")
+            else:
+                errs.append(f"{rp}: ruta nije pronadjena")
+            continue
+        rd = decisions.setdefault("routes", {}).setdefault(rp, {})
+        rd["status"] = status
+        rd["sha256"] = routes[rp]["sha256"]
+    return errs
+
+
+def do_reload(spec):
+    """Posle aktivacije: graceful reload da PHP procesi odmah vide novu verziju (realpath kes)."""
+    if spec == "apache":
+        tool = shutil.which("apache2ctl") or shutil.which("apachectl")
+        if not tool:
+            return False, "apache2ctl/apachectl nije pronadjen"
+        cmd = [tool, "graceful"]
+    else:
+        cmd = ["systemctl", "reload", spec[4:]]
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    except Exception as e:
+        return False, str(e)
+    if res.returncode != 0:
+        out = (res.stderr.decode(errors="replace") or res.stdout.decode(errors="replace")).strip()[:300]
+        return False, f"{' '.join(cmd)} -> kod {res.returncode}" + (f": {out}" if out else "")
+    return True, " ".join(cmd)
+
+
+def reload_spec(v):
+    if v == "apache" or re.fullmatch(r"fpm:[A-Za-z0-9_.@-]+", v):
+        return v
+    raise argparse.ArgumentTypeError("dozvoljeno: apache ili fpm:<ime servisa>, npr. fpm:php8.3-fpm")
+
+
 def export_decisions(active_manifest_path, decisions_path):
     """Pravi decisions fajl iz trenutno aktivnog manifesta (rute i parametri koji nisu 'auto', plus rezim)."""
     res = subprocess.run(['php', '-r', '$m = require $argv[1]; echo json_encode($m);', active_manifest_path],
@@ -625,7 +682,7 @@ def export_decisions(active_manifest_path, decisions_path):
 
 
 def run_smoke_test(temp_output_path):
-    """Proširena smoke matrica (v0.3.3) sa sentinel testom i proverom statusa."""
+    """Proširena smoke matrica (v0.3.4) sa sentinel testom i proverom statusa."""
     test_dir = tempfile.mkdtemp(prefix="aceshrug_smoke_")
     try:
         app_dir = os.path.join(test_dir, "app")
@@ -664,7 +721,7 @@ def run_smoke_test(temp_output_path):
             else:
                 manifest_data = {
                     "format_version": 2,
-                    "engine_version": "0.3.3",
+                    "engine_version": "0.3.4",
                     "application_id": "smoke_test",
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "mode": mode,
@@ -761,7 +818,7 @@ def run_smoke_test(temp_output_path):
         tamper_hash = hashlib.sha256(b"<?php echo 'BODY-OK';").hexdigest() # Mismatch sa manifestom
 
         bad_route_manifest = {
-            "format_version": 2, "engine_version": "0.3.3", "application_id": "smoke_test",
+            "format_version": 2, "engine_version": "0.3.4", "application_id": "smoke_test",
             "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
             "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
             "routes": {"tamper_test.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "cli", "methods": ["GET"], "sha256": tamper_hash, "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
@@ -771,7 +828,7 @@ def run_smoke_test(temp_output_path):
 
         # Scenario 6: include_tampered
         bad_manifest = {
-            "format_version": 2, "engine_version": "0.3.3", "application_id": "smoke_test",
+            "format_version": 2, "engine_version": "0.3.4", "application_id": "smoke_test",
             "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
             "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
             "routes": {"probe.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "cli", "methods": ["GET"], "sha256": probe_hash, "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
@@ -830,7 +887,7 @@ def run_smoke_test(temp_output_path):
         shutil.rmtree(test_dir, ignore_errors=True)
 
 def main():
-    parser = argparse.ArgumentParser(description="ACESHRUG Universal Builder v0.3.3")
+    parser = argparse.ArgumentParser(description="ACESHRUG Universal Builder v0.3.4")
     parser.add_argument("--input", help="Ulazni direktorijum aplikacije (read-only)")
     parser.add_argument("--output", required=True, help="Izlazni ACESHRUG direktorijum (symlink baza)")
     parser.add_argument("--php-user", default="www-data", help="Sistemski korisnik za pool.conf")
@@ -841,6 +898,9 @@ def main():
     parser.add_argument("--strict", action="store_true", help="Odbij aktivaciju ako postoje auto rute ili parametri")
     parser.add_argument("--accept-reclassified", action="store_true", help="Dozvoli aktivaciju iako su fajlovi sa odlukom za rutu sada include")
     parser.add_argument("--accept-stale", action="store_true", help="U enforcement rezimu dozvoli aktivaciju iako su neke potvrde zastarele (promenjen fajl)")
+    parser.add_argument("--confirm", action="append", default=[], metavar="FAJL", help="Potvrdi rutu (status confirmed + trenutni sha256) i upisi u decisions fajl; ponavlja se")
+    parser.add_argument("--reject", action="append", default=[], metavar="FAJL", help="Odbij rutu (status rejected + trenutni sha256) i upisi u decisions fajl; ponavlja se")
+    parser.add_argument("--reload", type=reload_spec, metavar="apache|fpm:SERVIS", help="Posle uspesne aktivacije uradi graceful reload (apache) ili systemctl reload SERVIS")
     parser.add_argument("--decisions", help="Fajl sa ljudskim odlukama (podrazumevano: <output>.decisions.json)")
     parser.add_argument("--export-decisions", action="store_true", help="Napravi decisions fajl iz trenutno aktivnog manifesta i izadji")
 
@@ -890,6 +950,11 @@ def main():
             os.symlink(prev_version, temp_link)
             os.replace(temp_link, current_link)
             print(f"[✔] Uspešno izvršen pametan rollback na verziju: {prev_version}")
+            if args.reload:
+                ok, msg = do_reload(args.reload)
+                print(f"[✔] Reload: {msg}" if ok else f"[!] Rollback aktiviran, ali reload nije uspeo: {msg}")
+                if not ok:
+                    sys.exit(5)
             sys.exit(0)
 
         decisions_path = os.path.abspath(args.decisions) if args.decisions else output_path + ".decisions.json"
@@ -935,6 +1000,21 @@ def main():
                 print(f"    - {b['file']} [kod: {b['code']}]: {b['issue']}")
             sys.exit(2)
 
+        decisions_dirty = False
+        if args.confirm or args.reject:
+            both = set(args.confirm) & set(args.reject)
+            if both:
+                print(f"[-] Greška: isti fajl i u --confirm i u --reject: {', '.join(sorted(both))}")
+                sys.exit(1)
+            merr = mark_routes(decisions, routes, includes, input_path, args.confirm, "confirmed")
+            merr += mark_routes(decisions, routes, includes, input_path, args.reject, "rejected")
+            if merr:
+                print("[-] Greška u --confirm/--reject (decisions fajl nije menjan):")
+                for e in merr:
+                    print(f"    - {e}")
+                sys.exit(1)
+            decisions_dirty = True
+
         applied, stale, missing, has_auto_items, reclassified = apply_decisions(routes, decisions, includes)
         new_auto = [rp for rp, r in routes.items() if rp not in (decisions.get("routes") or {}) and r["status"] == "auto"]
         bad_rx = check_regexes(routes)
@@ -975,7 +1055,7 @@ def main():
 
             report_path = os.path.join(temp_output_path, "REPORT.md")
             with open(report_path, "w", encoding="utf-8") as rep:
-                rep.write("# ACESHRUG Universal Analysis Report (v0.3.3)\n\n")
+                rep.write("# ACESHRUG Universal Analysis Report (v0.3.4)\n\n")
                 rep.write(f"- **Scan Date:** {datetime.now(timezone.utc).isoformat()}\n")
                 rep.write(f"- **Ukupno PHP fajlova:** {len(all_files)}\n")
                 rep.write(f"- **Entrypoint ruta:** {len(routes)}\n")
@@ -1015,7 +1095,7 @@ def main():
 
             manifest_data = {
                 "format_version": 2,
-                "engine_version": "0.3.3",
+                "engine_version": "0.3.4",
                 "application_id": os.path.basename(input_path),
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "mode": decisions.get("mode", "monitor"),
@@ -1110,7 +1190,21 @@ php_admin_flag[expose_php] = Off
                     if old_v != active_target and os.path.exists(os.path.join(old_v, ".aceshrug-generated")):
                         shutil.rmtree(old_v)
 
-            print(f"[✔] ACESHRUG v0.3.3 uspešno generisan i aktiviran preko symlink-a: {output_path}")
+            print(f"[✔] ACESHRUG v0.3.4 uspešno generisan i aktiviran preko symlink-a: {output_path}")
+
+            if decisions_dirty:
+                save_decisions(decisions, decisions_path)
+                print(f"[✔] Odluke upisane u {decisions_path} (potvrđeno: {len(args.confirm)}, odbijeno: {len(args.reject)}; prethodna verzija: .bak)")
+
+            reload_failed = False
+            if args.reload:
+                ok, msg = do_reload(args.reload)
+                if ok:
+                    print(f"[✔] Reload: {msg}")
+                else:
+                    reload_failed = True
+                    print(f"[!] Nova verzija je aktivna, ali reload nije uspeo: {msg}")
+                    print("    PHP procesi mogu do ~2 min koristiti staru verziju (realpath keš). Uradi reload ručno.")
 
             if stale:
                 print(f"[!] Upozorenje: {len(stale)} odluka je zastarelo (fajl promenjen) i vraceno na auto. Vidi REPORT.md.")
@@ -1120,6 +1214,8 @@ php_admin_flag[expose_php] = Off
                 print(f"[!] Upozorenje: {len(reclassified)} odluka za rute odnosi se na fajlove koji su sada include. Vidi REPORT.md.")
             if new_auto and decisions.get("mode") == "enforcement":
                 print(f"[!] Upozorenje: enforcement, a {len(new_auto)} novih ruta nema odluku (samo signal). Za potpuno zakljucan ugovor: --strict.")
+            if reload_failed:
+                sys.exit(5)
             if has_auto_items:
                 print(f"[!] Postoje stavke sa statusom auto (samo signal). Rezim: {decisions.get('mode', 'monitor')}.")
                 sys.exit(3)

@@ -1,4 +1,4 @@
-# ACESHRUG builder: uputstvo (v0.3.3)
+# ACESHRUG builder: uputstvo (v0.3.4)
 
 Builder analizira PHP aplikaciju i u direktorijumu **van webroot-a** pravi gatekeeper (`gate.php`), ugovor (`manifest.php`), šablon php-fpm pool-a (`pool.conf`) i izveštaj (`REPORT.md`). **Kod aplikacije ostaje netaknut**: gate se uključuje preko `auto_prepend_file`.
 
@@ -38,6 +38,9 @@ sudo python3 builder/aceshrug_build.py \
 | `--keep N` | koliko verzija se čuva (podrazumevano 5) |
 | `--rollback` | vraća symlink na verziju pre aktivne |
 | `--decisions PATH` | fajl sa ljudskim odlukama (podrazumevano `<output>.decisions.json`) |
+| `--confirm FAJL` | potvrđuje rutu: upisuje `confirmed` + trenutni `sha256` u decisions fajl (posle uspešne aktivacije, uz `.bak`); ponavlja se |
+| `--reject FAJL` | isto, sa statusom `rejected` |
+| `--reload apache` / `--reload fpm:SERVIS` | posle uspešne aktivacije ili rollback-a: `apache2ctl graceful`, odnosno `systemctl reload SERVIS` (npr. `fpm:php8.3-fpm`) |
 | `--export-decisions` | pravi decisions fajl iz trenutno aktivnog manifesta i izlazi (`--input` nije potreban) |
 | `--strict` | odbija aktivaciju dok postoji ijedna `auto` stavka |
 | `--accept-reclassified` | u enforcement režimu ipak aktivira kada se odluka za rutu odnosi na fajl koji je sada include |
@@ -60,6 +63,7 @@ sudo python3 builder/aceshrug_build.py \
 | `1` | greška; aktivna verzija nije dirana |
 | `2` | blokeri u kodu; ništa nije napravljeno |
 | `3` | aktivirano u monitor režimu; postoje `auto` stavke (uobičajeno posle svakog build-a) |
+| `5` | nova verzija je aktivna, ali `--reload` nije uspeo; uradi reload ručno |
 | `4` | enforcement, a odluke traže pregled (promenjena potvrđena ruta ili ruta koja je postala include); aktivna verzija nije dirana (vidi tačku 7) |
 
 ---
@@ -198,8 +202,8 @@ Manifest v2 ima `status` po ruti i parametru:
 
 Postupak:
 1. pustiti monitor i pregledati signale (tačka 5);
-2. napraviti početni decisions fajl: `--export-decisions` (iz aktivnog manifesta) ili ručno;
-3. potvrditi proverene rute i parametre, ručno dodati parametre koje analiza ne vidi (npr. one koji se čitaju preko `filter_input`), postaviti `mode`;
+2. potvrditi ili odbiti rute: `--confirm login.php --reject an1.php` (builder sam upisuje status i trenutni `sha256`), ili napraviti početni fajl sa `--export-decisions` i urediti ga ručno;
+3. za parametre: potvrditi ih u decisions fajlu, ručno dodati parametre koje analiza ne vidi (npr. one koji se čitaju preko `filter_input`), postaviti `mode`;
 4. ponovo pokrenuti builder. On validira fajl (statusi, tipovi, regex kroz PHP) i spaja odluke sa analizom.
 
 **`confirmed` ruta mora imati `sha256`.** Potvrda važi samo za sadržaj koji je pregledan; bez hash-a builder odbija decisions fajl.
@@ -258,6 +262,15 @@ Provereno je da build odbija gate sa namerno ubačenim kvarovima: bez signala, b
 
 ## 9. Održavanje
 
-- **Posle svakog deploy-a aplikacije ponovo pokreni builder.** U suprotnom se dobija `file_tampered` (u monitor režimu) ili blokada (u enforcement režimu, za potvrđene rute).
-- Povratak na prethodnu verziju: `sudo python3 builder/aceshrug_build.py --input x --output /etc/aceshrug/app --rollback`.
+- **Posle svakog deploy-a aplikacije ponovo pokreni builder, sa `--reload`.** Hash je dokaz da se izvršava pregledani kod, pa svaka namerna izmena traži novi build. Reload je neophodan: gate učitava manifest preko pravog direktorijuma verzije, a PHP kešira razrešene putanje (`realpath_cache_ttl`, podrazumevano 120 s), pa bi procesi do dva minuta koristili staru verziju. `graceful` ne prekida zahteve u toku.
+
+  ```bash
+  # 1. kopiraj novi kod  2. build + reload
+  sudo python3 builder/aceshrug_build.py --input /var/www/html/app --output /etc/aceshrug/app \
+      --php-user www-data --php-group www-data --reload apache
+  # kod 4 (enforcement, promenjena potvrđena ruta): pregledaj izmenu, pa
+  sudo python3 builder/aceshrug_build.py ... --confirm login.php --reload apache
+  ```
+- Bez rebuild-a izmena izgleda kao napad: dobija se `file_tampered` (u monitor režimu) ili blokada (u enforcement režimu, za potvrđene rute; za izmenjen include, na svim rutama koje ga koriste).
+- Povratak na prethodnu verziju: `sudo python3 builder/aceshrug_build.py --output /etc/aceshrug/app --rollback --reload apache`.
 - Potpuno isključivanje: `a2disconf` + reload. Aplikacija radi kao pre, jer njen kod nikad nije menjan.

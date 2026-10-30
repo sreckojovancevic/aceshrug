@@ -2,7 +2,12 @@
 
 Verzije builder-a (`builder/aceshrug_build.py`). Svaka verzija je pregledana i pokrenuta. Od v0.2.11 nadalje provera uključuje i testove sa namerno pokvarenim gate-om, koji proveravaju da smoke test zaista hvata kvar.
 
-## v0.3.3 (trenutna)
+## v0.3.4 (trenutna)
+- **`--confirm FAJL` / `--reject FAJL`:** builder sam upisuje status i trenutni `sha256` u decisions fajl, umesto ručnog prepisivanja hash-a. Upis je atomski, sa `.bak`, i dešava se tek posle uspešne aktivacije. Odbija fajl koji nije ruta (include, nepostojeći, van `--input`) ili isti fajl u obe liste; tada decisions fajl ostaje netaknut.
+- **`--reload apache` / `--reload fpm:SERVIS`:** posle uspešne aktivacije (i posle `--rollback`) radi `apache2ctl graceful` odnosno `systemctl reload SERVIS`. Bez toga PHP procesi do ~2 min koriste staru verziju (realpath keš). Ako build padne, reload se ne radi. Neuspeo reload: izlazni kod 5. Ime servisa se validira (bez shell znakova).
+- Gate nepromenjen u odnosu na v0.3.3.
+
+## v0.3.3
 - **`$_REQUEST` pri `null` politici:** posle uklanjanja parametra vrednost u `$_REQUEST` se ponovo izvodi iz preostalih izvora po `request_order`/`variables_order`. U v0.3.2 se gledalo samo da li ključ postoji u drugom izvoru, pa je `$_REQUEST` mogao zadržati odbačenu vrednost (GET `x` deklarisan, POST `x` odbačen).
 - **Reklasifikacija ruta → include:** odluka za rutu čiji je fajl sada include više se ne prijavljuje kao "ruta više ne postoji". Prikazuje se kao poseban događaj u REPORT-u, a u enforcement režimu zaustavlja build (kod 4; opt-out `--accept-reclassified`). Semantika je zapisana: odluka za rutu važi za entrypoint, ne za izvršavanje kroz include.
 - Enforcement sa novim rutama bez odluke: upozorenje i lista u REPORT-u; uputstvo jasno razdvaja podrazumevanu garanciju od `--strict`.
