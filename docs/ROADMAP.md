@@ -6,11 +6,11 @@ Prva proba u monitor režimu na produkcionoj PHP aplikaciji (~1.300 PHP fajlova,
 
 | # | Zahtev | Zašto |
 |---|---|---|
-| 1 | `getenv()` umesto `$_ENV` u smoke fixture-u | uz `variables_order=GPCS` build uvek pada |
-| 2 | **provera čitljivosti svakog fajla i direktorijuma kao `--php-user`** pre generisanja; nečitljivo se izostavlja iz manifesta i prijavljuje | builder radi kao root i vidi direktorijume sa pravima `000` (namerno isključene module), a gate radi kao www-data; jedan takav include je oborio ceo sajt |
-| 3 | `include_missing_or_outside` u monitor režimu = **signal**, ne blokada | monitor po definiciji ne sme da blokira |
+| 1 | ✔ v0.3.1: `getenv()` umesto `$_ENV` u smoke fixture-u | uz `variables_order=GPCS` build uvek pada |
+| 2 | ✔ v0.3.5: **provera čitljivosti svakog fajla i direktorijuma kao `--php-user`** pre generisanja; nečitljivo se izostavlja iz manifesta i prijavljuje | builder radi kao root i vidi direktorijume sa pravima `000` (namerno isključene module), a gate radi kao www-data; jedan takav include je oborio ceo sajt |
+| 3 | ✔ v0.3.0: `include_missing_or_outside` u monitor režimu = **signal**, ne blokada | monitor po definiciji ne sme da blokira |
 | 4 | odbiti `--output` unutar webroot-a | REPORT i konfiguracija ne smeju biti dostupni preko URL-a |
-| 5 | `--vendor <dir>`: include-only, sa hash-om, bez skeniranja blokera i bez statusa rute | vendor kod je dao 15 lažnih blokera i ~1.200 "ruta" |
+| 5 | delimično v0.3.5 (`--exclude` izbacuje stablo iz manifesta); ostaje `--vendor <dir>`: include-only, sa hash-om, bez skeniranja blokera i bez statusa rute | vendor kod je dao 15 lažnih blokera i ~1.200 "ruta" |
 | 6 | regex za `extract` ne sme da hvata `->extract(` ni `function extract(` | lažni nalazi u ZIP bibliotekama |
 | 7 | kolačići: politika `null` koja se sprovodi; sesijski kolačić automatski u šemi | `PHPSESSID` i `_ga*` daju signal na svakom zahtevu |
 | 8 | kreiranje direktorijuma verzije unutar `try`, sa urednom porukom | traceback pri koliziji imena |

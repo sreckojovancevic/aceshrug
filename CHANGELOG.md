@@ -2,7 +2,12 @@
 
 Verzije builder-a (`builder/aceshrug_build.py`). Svaka verzija je pregledana i pokrenuta. Od v0.2.11 nadalje provera uključuje i testove sa namerno pokvarenim gate-om, koji proveravaju da smoke test zaista hvata kvar.
 
-## v0.3.4 (trenutna)
+## v0.3.5 (trenutna)
+- **Preskakanje nečitljivog:** fajlovi koje `--php-user` ne može da pročita ne ulaze u manifest (provera kao taj korisnik, fail-closed) i navode se u REPORT-u. Zahtev sa terena: namerno zaključani direktorijumi (`000`) više ne traže ručno brisanje iz manifesta. Opt-out: `--include-unreadable`.
+- **`--exclude PUTANJA`:** direktorijum ili fajl koji ne ulazi u manifest; ponavlja se. Proverava se da postoji i da je unutar `--input`.
+- Gate nepromenjen.
+
+## v0.3.4
 - **`--confirm FAJL` / `--reject FAJL`:** builder sam upisuje status i trenutni `sha256` u decisions fajl, umesto ručnog prepisivanja hash-a. Upis je atomski, sa `.bak`, i dešava se tek posle uspešne aktivacije. Odbija fajl koji nije ruta (include, nepostojeći, van `--input`) ili isti fajl u obe liste; tada decisions fajl ostaje netaknut.
 - **`--reload apache` / `--reload fpm:SERVIS`:** posle uspešne aktivacije (i posle `--rollback`) radi `apache2ctl graceful` odnosno `systemctl reload SERVIS`. Bez toga PHP procesi do ~2 min koriste staru verziju (realpath keš). Ako build padne, reload se ne radi. Neuspeo reload: izlazni kod 5. Ime servisa se validira (bez shell znakova).
 - Gate nepromenjen u odnosu na v0.3.3.

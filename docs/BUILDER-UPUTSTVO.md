@@ -1,4 +1,4 @@
-# ACESHRUG builder: uputstvo (v0.3.4)
+# ACESHRUG builder: uputstvo (v0.3.5)
 
 Builder analizira PHP aplikaciju i u direktorijumu **van webroot-a** pravi gatekeeper (`gate.php`), ugovor (`manifest.php`), šablon php-fpm pool-a (`pool.conf`) i izveštaj (`REPORT.md`). **Kod aplikacije ostaje netaknut**: gate se uključuje preko `auto_prepend_file`.
 
@@ -41,13 +41,16 @@ sudo python3 builder/aceshrug_build.py \
 | `--confirm FAJL` | potvrđuje rutu: upisuje `confirmed` + trenutni `sha256` u decisions fajl (posle uspešne aktivacije, uz `.bak`); ponavlja se |
 | `--reject FAJL` | isto, sa statusom `rejected` |
 | `--reload apache` / `--reload fpm:SERVIS` | posle uspešne aktivacije ili rollback-a: `apache2ctl graceful`, odnosno `systemctl reload SERVIS` (npr. `fpm:php8.3-fpm`) |
+| `--exclude PUTANJA` | direktorijum ili fajl (relativno na `--input`) koji ne ulazi u manifest; ponavlja se |
+| `--include-unreadable` | ne preskače fajlove koje `--php-user` ne može da pročita (podrazumevano se preskaču) |
 | `--export-decisions` | pravi decisions fajl iz trenutno aktivnog manifesta i izlazi (`--input` nije potreban) |
 | `--strict` | odbija aktivaciju dok postoji ijedna `auto` stavka |
 | `--accept-reclassified` | u enforcement režimu ipak aktivira kada se odluka za rutu odnosi na fajl koji je sada include |
 | `--accept-stale` | u enforcement režimu ipak aktivira kada su neke potvrde zastarele (te rute prelaze u `auto`) |
 
 ### Šta builder radi, redom
-1. Analizira kod: rute, include-ove, parametre, blokere.
+1. Pravi spisak PHP fajlova bez `--exclude` stabala, pa izbacuje one koje **`--php-user` ne može da pročita**. Provera se radi kao taj korisnik (`sudo -u`), znači istim pogledom kao gate. Ako sama provera ne uspe, build staje.
+   Analizira kod: rute, include-ove, parametre, blokere.
 2. **Ako ima blokera, staje (kod 2) i ništa ne pravi.**
 3. Pravi novu verziju u `<output>.d/<vreme>_<sufiks>/`.
 4. Pokreće `php -l` nad `gate.php` i `manifest.php`, a zatim proverava strukturu manifesta (format v2).
@@ -271,6 +274,8 @@ Provereno je da build odbija gate sa namerno ubačenim kvarovima: bez signala, b
   # kod 4 (enforcement, promenjena potvrđena ruta): pregledaj izmenu, pa
   sudo python3 builder/aceshrug_build.py ... --confirm login.php --reload apache
   ```
+- **Namerno zaključani direktorijumi** (npr. prava `000`): builder radi kao root i vidi ih, ali gate radi kao `--php-user` i ne vidi. Zato ih builder od v0.3.5 sam preskače i navodi u REPORT-u ("Preskočeno"). Ranije je jedan takav include u manifestu oborio ceo sajt. Šta to znači: direktan poziv takvog fajla je neregistrovana ruta (u enforcement režimu SHRUG), a include se ne proverava hash-om.
+- **`--exclude`** služi za delove koje svesno ne želiš u ugovoru (npr. `--exclude vendor --exclude push/moded`). Važi isto: nisu rute, a include-ovi iz njih nemaju proveru hash-a. Nepostojeća putanja ili putanja van `--input` je greška.
 - Bez rebuild-a izmena izgleda kao napad: dobija se `file_tampered` (u monitor režimu) ili blokada (u enforcement režimu, za potvrđene rute; za izmenjen include, na svim rutama koje ga koriste).
 - Povratak na prethodnu verziju: `sudo python3 builder/aceshrug_build.py --output /etc/aceshrug/app --rollback --reload apache`.
 - Potpuno isključivanje: `a2disconf` + reload. Aplikacija radi kao pre, jer njen kod nikad nije menjan.

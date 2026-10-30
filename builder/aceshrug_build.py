@@ -14,10 +14,10 @@ import uuid
 import fcntl
 from datetime import datetime, timezone
 
-# --- GATEKEEPER STUB (v0.3.4 - Enterprise Hardened RASP) ---
+# --- GATEKEEPER STUB (v0.3.5 - Enterprise Hardened RASP) ---
 GATE_PHP_STUB = """<?php
 /**
- * ACESHRUG Gatekeeper v0.3.4 (Enterprise Hardened Runtime)
+ * ACESHRUG Gatekeeper v0.3.5 (Enterprise Hardened Runtime)
  * Učitava se preko auto_prepend_file. Koristi keširani manifest.php.
  */
 if (defined('ACESHRUG_GATE')) {
@@ -370,7 +370,41 @@ def python_to_php_array(obj, indent=4):
     else:
         return "'" + php_escape(obj) + "'"
 
-def analyze_codebase(input_dir, prev_manifest=None, allowed_blockers=None):
+def is_excluded(relpath, excludes):
+    return any(relpath == e or relpath.startswith(e + "/") for e in excludes)
+
+
+def list_php_files(input_dir, excludes):
+    """Svi .php fajlovi (relativne putanje), bez --exclude stabala."""
+    out = []
+    for root, dirs, files in os.walk(input_dir):
+        rel_root = os.path.relpath(root, input_dir).replace("\\", "/")
+        rel_root = "" if rel_root == "." else rel_root
+        dirs[:] = sorted(d for d in dirs if not is_excluded((rel_root + "/" + d).lstrip("/"), excludes))
+        for f in sorted(files):
+            if f.endswith(".php"):
+                rp = (rel_root + "/" + f).lstrip("/")
+                if not is_excluded(rp, excludes):
+                    out.append(rp)
+    return out
+
+
+def find_unreadable(input_dir, relpaths, php_user):
+    """Fajlovi koje PHP korisnik ne moze da procita (provera kao taj korisnik, istim pogledom kao gate). Fail-closed."""
+    if not relpaths:
+        return []
+    code = '$b=$argv[1]; $bad=[]; foreach (json_decode(stream_get_contents(STDIN), true) as $r) { if (!is_readable($b . "/" . $r)) $bad[] = $r; } echo json_encode($bad);'
+    res = subprocess.run(['sudo', '-u', php_user, 'php', '-r', code, input_dir], input=json.dumps(relpaths).encode(),
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if res.returncode != 0:
+        raise RuntimeError(f"provera čitljivosti kao '{php_user}' nije uspela (kod {res.returncode}): {res.stderr.decode(errors='replace').strip()[:300]}")
+    out = json.loads(res.stdout.decode())
+    if not isinstance(out, list):
+        raise RuntimeError("provera čitljivosti vratila je neočekivan rezultat")
+    return out
+
+
+def analyze_codebase(input_dir, prev_manifest=None, allowed_blockers=None, file_list=None):
     if allowed_blockers is None:
         allowed_blockers = []
     
@@ -389,12 +423,13 @@ def analyze_codebase(input_dir, prev_manifest=None, allowed_blockers=None):
         (r'\bparse_str\s*\([^,)]+\)', "parse_str", "parse_str() sa jednim argumentom")
     ]
 
-    for root, dirs, files in os.walk(input_dir):
-        for file in files:
-            if file.endswith(".php"):
-                fullpath = os.path.join(root, file)
-                relpath = os.path.relpath(fullpath, input_dir).replace("\\", "/")
-                
+    if file_list is None:
+        file_list = list_php_files(input_dir, [])
+    for relpath in file_list:
+        if True:
+            if True:
+                fullpath = os.path.join(input_dir, relpath)
+
                 with open(fullpath, "rb") as f:
                     content_bytes = f.read()
                 
@@ -682,7 +717,7 @@ def export_decisions(active_manifest_path, decisions_path):
 
 
 def run_smoke_test(temp_output_path):
-    """Proširena smoke matrica (v0.3.4) sa sentinel testom i proverom statusa."""
+    """Proširena smoke matrica (v0.3.5) sa sentinel testom i proverom statusa."""
     test_dir = tempfile.mkdtemp(prefix="aceshrug_smoke_")
     try:
         app_dir = os.path.join(test_dir, "app")
@@ -721,7 +756,7 @@ def run_smoke_test(temp_output_path):
             else:
                 manifest_data = {
                     "format_version": 2,
-                    "engine_version": "0.3.4",
+                    "engine_version": "0.3.5",
                     "application_id": "smoke_test",
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "mode": mode,
@@ -818,7 +853,7 @@ def run_smoke_test(temp_output_path):
         tamper_hash = hashlib.sha256(b"<?php echo 'BODY-OK';").hexdigest() # Mismatch sa manifestom
 
         bad_route_manifest = {
-            "format_version": 2, "engine_version": "0.3.4", "application_id": "smoke_test",
+            "format_version": 2, "engine_version": "0.3.5", "application_id": "smoke_test",
             "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
             "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
             "routes": {"tamper_test.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "cli", "methods": ["GET"], "sha256": tamper_hash, "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
@@ -828,7 +863,7 @@ def run_smoke_test(temp_output_path):
 
         # Scenario 6: include_tampered
         bad_manifest = {
-            "format_version": 2, "engine_version": "0.3.4", "application_id": "smoke_test",
+            "format_version": 2, "engine_version": "0.3.5", "application_id": "smoke_test",
             "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
             "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
             "routes": {"probe.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "cli", "methods": ["GET"], "sha256": probe_hash, "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
@@ -887,7 +922,7 @@ def run_smoke_test(temp_output_path):
         shutil.rmtree(test_dir, ignore_errors=True)
 
 def main():
-    parser = argparse.ArgumentParser(description="ACESHRUG Universal Builder v0.3.4")
+    parser = argparse.ArgumentParser(description="ACESHRUG Universal Builder v0.3.5")
     parser.add_argument("--input", help="Ulazni direktorijum aplikacije (read-only)")
     parser.add_argument("--output", required=True, help="Izlazni ACESHRUG direktorijum (symlink baza)")
     parser.add_argument("--php-user", default="www-data", help="Sistemski korisnik za pool.conf")
@@ -901,6 +936,8 @@ def main():
     parser.add_argument("--confirm", action="append", default=[], metavar="FAJL", help="Potvrdi rutu (status confirmed + trenutni sha256) i upisi u decisions fajl; ponavlja se")
     parser.add_argument("--reject", action="append", default=[], metavar="FAJL", help="Odbij rutu (status rejected + trenutni sha256) i upisi u decisions fajl; ponavlja se")
     parser.add_argument("--reload", type=reload_spec, metavar="apache|fpm:SERVIS", help="Posle uspesne aktivacije uradi graceful reload (apache) ili systemctl reload SERVIS")
+    parser.add_argument("--exclude", action="append", default=[], metavar="PUTANJA", help="Direktorijum ili fajl (relativno na --input) koji ne ulazi u manifest; ponavlja se")
+    parser.add_argument("--include-unreadable", action="store_true", help="Ne preskači fajlove koje --php-user ne može da pročita (podrazumevano se preskaču)")
     parser.add_argument("--decisions", help="Fajl sa ljudskim odlukama (podrazumevano: <output>.decisions.json)")
     parser.add_argument("--export-decisions", action="store_true", help="Napravi decisions fajl iz trenutno aktivnog manifesta i izadji")
 
@@ -987,8 +1024,34 @@ def main():
                 print(f"    - {e}")
             sys.exit(1)
 
+        excludes = []
+        for e in args.exclude:
+            full = os.path.realpath(e if os.path.isabs(e) else os.path.join(input_path, e))
+            rel = os.path.relpath(full, input_path).replace("\\", "/")
+            if rel == "." or rel.startswith(".."):
+                print(f"[-] Greška: --exclude '{e}' nije unutar --input (ili je ceo --input).")
+                sys.exit(1)
+            if not os.path.exists(full):
+                print(f"[-] Greška: --exclude '{e}' ne postoji.")
+                sys.exit(1)
+            excludes.append(rel)
+
         print(f"[*] Analiziram aplikaciju...")
-        routes, includes, all_files, blockers, findings, has_todos, has_auto_items = analyze_codebase(input_path, None, args.allow_blocker)
+        file_list = list_php_files(input_path, excludes)
+        unreadable = []
+        if not args.include_unreadable:
+            if os.geteuid() == 0:
+                try:
+                    unreadable = find_unreadable(input_path, file_list, args.php_user)
+                except Exception as e:
+                    print(f"[-] Greška: {e}")
+                    sys.exit(1)
+            else:
+                unreadable = [rp for rp in file_list if not os.access(os.path.join(input_path, rp), os.R_OK)]
+            if unreadable:
+                ur = set(unreadable)
+                file_list = [rp for rp in file_list if rp not in ur]
+        routes, includes, all_files, blockers, findings, has_todos, has_auto_items = analyze_codebase(input_path, None, args.allow_blocker, file_list)
 
         if not all_files:
             print(f"[-] Greška: U ulaznom direktorijumu nije pronađen nijedan PHP fajl.")
@@ -1055,7 +1118,7 @@ def main():
 
             report_path = os.path.join(temp_output_path, "REPORT.md")
             with open(report_path, "w", encoding="utf-8") as rep:
-                rep.write("# ACESHRUG Universal Analysis Report (v0.3.4)\n\n")
+                rep.write("# ACESHRUG Universal Analysis Report (v0.3.5)\n\n")
                 rep.write(f"- **Scan Date:** {datetime.now(timezone.utc).isoformat()}\n")
                 rep.write(f"- **Ukupno PHP fajlova:** {len(all_files)}\n")
                 rep.write(f"- **Entrypoint ruta:** {len(routes)}\n")
@@ -1065,9 +1128,17 @@ def main():
                 rep.write(f"- **Primenjene odluke:** {len(applied)} ruta\n")
                 rep.write(f"- **Zastarele odluke (fajl promenjen, vraceno na auto):** {len(stale)}\n")
                 rep.write(f"- **Odluke za rute kojih vise nema:** {len(missing)}\n")
+                rep.write(f"- **Izuzeto (--exclude):** {', '.join('`' + e + '`' for e in excludes) if excludes else 'nista'}\n")
+                rep.write(f"- **Preskoceno, nečitljivo za {args.php_user}:** {len(unreadable)}\n")
                 rep.write(f"- **Odluke za rute koje su sada include (reklasifikacija):** {len(reclassified)}\n")
                 rep.write(f"- **Nove rute bez odluke (auto):** {len(new_auto)}\n")
                 rep.write(f"- **Auto stavke prisutne:** {'Da' if has_auto_items else 'Ne'}\n\n")
+                if unreadable:
+                    rep.write(f"## Preskočeno: {args.php_user} ne može da pročita\n\n")
+                    rep.write("Ovi fajlovi nisu u manifestu. Direktan poziv je neregistrovana ruta (u enforcement režimu SHRUG), a include se ne proverava.\n\n")
+                    for x in unreadable:
+                        rep.write(f"- `{x}`\n")
+                    rep.write("\n")
                 if reclassified:
                     rep.write("## Reklasifikovane odluke (ruta -> include)\n\n")
                     for x, st in reclassified:
@@ -1095,7 +1166,7 @@ def main():
 
             manifest_data = {
                 "format_version": 2,
-                "engine_version": "0.3.4",
+                "engine_version": "0.3.5",
                 "application_id": os.path.basename(input_path),
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "mode": decisions.get("mode", "monitor"),
@@ -1190,7 +1261,7 @@ php_admin_flag[expose_php] = Off
                     if old_v != active_target and os.path.exists(os.path.join(old_v, ".aceshrug-generated")):
                         shutil.rmtree(old_v)
 
-            print(f"[✔] ACESHRUG v0.3.4 uspešno generisan i aktiviran preko symlink-a: {output_path}")
+            print(f"[✔] ACESHRUG v0.3.5 uspešno generisan i aktiviran preko symlink-a: {output_path}")
 
             if decisions_dirty:
                 save_decisions(decisions, decisions_path)
@@ -1210,6 +1281,10 @@ php_admin_flag[expose_php] = Off
                 print(f"[!] Upozorenje: {len(stale)} odluka je zastarelo (fajl promenjen) i vraceno na auto. Vidi REPORT.md.")
             if missing:
                 print(f"[!] Upozorenje: {len(missing)} odluka se odnosi na rute kojih vise nema.")
+            if excludes:
+                print(f"[*] Izuzeto (--exclude): {', '.join(excludes)}")
+            if unreadable:
+                print(f"[*] Preskočeno {len(unreadable)} fajlova koje {args.php_user} ne može da pročita (lista u REPORT.md).")
             if reclassified:
                 print(f"[!] Upozorenje: {len(reclassified)} odluka za rute odnosi se na fajlove koji su sada include. Vidi REPORT.md.")
             if new_auto and decisions.get("mode") == "enforcement":
