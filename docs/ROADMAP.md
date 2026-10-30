@@ -37,6 +37,8 @@ Neinteraktivni režim ostaje za CI: svako pitanje ima i odgovarajuću opciju (`-
 
 - Integracija `tools/aceshrug_gen.py` u builder (parser umesto regex-a; `filter_input`, `__DIR__` include, parametri kroz include lanac).
 - Korak potvrđivanja (`--confirm`): prelazak `auto` → `confirmed` po stavkama.
+- Odvojiti "fajl sme biti uključen" od "fajl sme biti direktno pozvan" (sada je fajl ili ruta ili include, po heuristici), i graf zavisnosti po ruti.
+- HTTP smoke test (status, telo, zaglavlja, metode) uz postojeći CLI test.
 - `disable_functions` (allowlist) i `open_basedir` u generisanoj konfiguraciji.
 - Hash include-a van puta zahteva (cron ili reload), umesto na svakom zahtevu.
 - SHRUG sa izjednačenim vremenom odgovora.

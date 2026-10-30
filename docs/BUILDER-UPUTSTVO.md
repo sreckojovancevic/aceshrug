@@ -1,4 +1,4 @@
-# ACESHRUG builder: uputstvo (v0.3.1)
+# ACESHRUG builder: uputstvo (v0.3.2)
 
 Builder analizira PHP aplikaciju i u direktorijumu **van webroot-a** pravi gatekeeper (`gate.php`), ugovor (`manifest.php`), šablon php-fpm pool-a (`pool.conf`) i izveštaj (`REPORT.md`). **Kod aplikacije ostaje netaknut**: gate se uključuje preko `auto_prepend_file`.
 
@@ -40,6 +40,7 @@ sudo python3 builder/aceshrug_build.py \
 | `--decisions PATH` | fajl sa ljudskim odlukama (podrazumevano `<output>.decisions.json`) |
 | `--export-decisions` | pravi decisions fajl iz trenutno aktivnog manifesta i izlazi (`--input` nije potreban) |
 | `--strict` | odbija aktivaciju dok postoji ijedna `auto` stavka |
+| `--accept-stale` | u enforcement režimu ipak aktivira kada su neke potvrde zastarele (te rute prelaze u `auto`) |
 
 ### Šta builder radi, redom
 1. Analizira kod: rute, include-ove, parametre, blokere.
@@ -58,6 +59,7 @@ sudo python3 builder/aceshrug_build.py \
 | `1` | greška; aktivna verzija nije dirana |
 | `2` | blokeri u kodu; ništa nije napravljeno |
 | `3` | aktivirano u monitor režimu; postoje `auto` stavke (uobičajeno posle svakog build-a) |
+| `4` | enforcement, a potvrđene rute su promenjene od pregleda; aktivna verzija nije dirana (vidi tačku 7) |
 
 ---
 
@@ -199,7 +201,13 @@ Postupak:
 3. potvrditi proverene rute i parametre, ručno dodati parametre koje analiza ne vidi (npr. one koji se čitaju preko `filter_input`), postaviti `mode`;
 4. ponovo pokrenuti builder. On validira fajl (statusi, tipovi, regex kroz PHP) i spaja odluke sa analizom.
 
-**Zastarele odluke:** ako je uz rutu zapisan `sha256`, a fajl se u međuvremenu promenio, builder tu rutu i njene parametre vraća na `auto` i navodi ih u REPORT-u pod "Zastarele odluke". Tako izmenjen kod nikad ne nasleđuje staru potvrdu bez pregleda.
+**`confirmed` ruta mora imati `sha256`.** Potvrda važi samo za sadržaj koji je pregledan; bez hash-a builder odbija decisions fajl.
+
+**Zastarele odluke:** ako se fajl potvrđene rute promenio (drugi hash), builder tu rutu i njene parametre vraća na `auto` i navodi ih u REPORT-u pod "Zastarele odluke". Tako izmenjen kod nikad ne nasleđuje staru potvrdu bez pregleda.
+- **`rejected` ostaje `rejected`** i posle izmene fajla (ruta i parametri). Promena koda može tražiti novo odobrenje, ali nikad ne pretvara zabranu u propuštanje.
+- **U enforcement režimu zastarela potvrda zaustavlja build** (kod 4) i aktivna verzija ostaje. Rešenje: pregledati izmenu i upisati novi `sha256`, ili svesno pokrenuti sa `--accept-stale`.
+
+**Politika `null` za nepoznate parametre:** u monitor režimu samo signal (`logged_allow_would_drop`), ulaz se ne menja. U enforcement režimu, na potvrđenoj ruti, parametar se uklanja iz `$_GET`/`$_POST`/`$_COOKIE` i iz `$_REQUEST` (osim ako isti ključ postoji u drugom izvoru).
 
 Enforcement se može uvoditi postepeno: rute koje ostanu `auto` i dalje samo daju signal.
 
@@ -222,8 +230,13 @@ Pre aktivacije builder pravi izolovanu probnu aplikaciju i pokreće stvarni `gat
 | 7b | `rejected` ruta, enforcement | prazno, kod 1, `rejected_route_accessed` |
 | 8 | `auto` parametar sa prekršajem, enforcement | izlaz, kod 0, `max_length_exceeded` |
 | 9 | `confirmed` parametar sa prekršajem, enforcement | prazno, kod 1, `max_length_exceeded` |
+| 10 | skripta koja upisuje fajl, ispravan parametar | upis se desio (dokaz da je test živ) |
+| 11 | ista skripta, prekršaj `confirmed` parametra | prazno, kod 1, upis se **nije** desio |
+| 12 | `null` politika, monitor | parametar ostaje, `logged_allow_would_drop` |
+| 13 | `null` politika, enforcement, `auto` ruta | parametar ostaje, `logged_allow_would_drop` |
+| 14 | `null` politika, enforcement, `confirmed` ruta | parametar uklonjen iz `$_GET` i `$_REQUEST`, `unknown_parameter_dropped` |
 
-Provereno je da build odbija gate sa namerno ubačenim kvarovima: bez signala, bez prepoznavanja ruta, bez provere hash-a, monitor koji blokira, `rejected` koji blokira u monitoru, ignorisanje statusa, nikad ne blokira.
+Provereno je da build odbija gate sa namerno ubačenim kvarovima: bez signala, bez prepoznavanja ruta, bez provere hash-a, monitor koji blokira, `rejected` koji blokira u monitoru, ignorisanje statusa, nikad ne blokira, `null` koji briše u monitoru, `null` koji nikad ne briše, `$_REQUEST` koji ostaje netaknut, parametarski prekršaj bez blokade.
 
 ---
 

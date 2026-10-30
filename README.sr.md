@@ -8,7 +8,7 @@
 
 [English](README.md)
 
-Status: **v0.3.1, eksperimentalno.** Monitor režim je proveren na produkcionoj PHP aplikaciji (Apache + mod_php, PHP 8.3). Enforcement režim još nije za produkciju.
+Status: **v0.3.2, eksperimentalno.** Monitor režim je proveren na produkcionoj PHP aplikaciji (Apache + mod_php, PHP 8.3). Enforcement režim još nije za produkciju.
 
 ---
 
@@ -41,7 +41,7 @@ Ceo koncept, sa radnim tokom: [docs/ACESHRUG-workflow.md](docs/ACESHRUG-workflow
 2. Gate se uključuje preko `auto_prepend_file`. **Kod aplikacije se ne menja.**
 3. Gate pre svakog zahteva proverava rutu, SAPI, metodu, hash ulaznog fajla, integritet include-ova i šemu parametara.
 4. **Monitor** režim beleži kršenja ugovora bez blokiranja. **Enforcement** blokira, i to samo stavke koje je čovek potvrdio (`status: confirmed`) ili odbio (`status: rejected`). Neispravan manifest ili konfiguracija su fatalni u oba režima.
-5. Ljudske odluke se čuvaju u posebnom fajlu (`<output>.decisions.json`), koji builder nikad ne prepisuje, pa potvrde preživljavaju rebuild. Ako se potvrđen fajl promeni, njegova odluka se automatski vraća na pregled.
+5. Ljudske odluke se čuvaju u posebnom fajlu (`<output>.decisions.json`), koji builder nikad ne prepisuje, pa potvrde preživljavaju rebuild. Ako se potvrđen fajl promeni, njegova odluka se automatski vraća na pregled (a u enforcement režimu build staje dok se izmena ne pregleda). Odbijena stavka ostaje odbijena.
 
 ---
 
@@ -137,5 +137,5 @@ Vidi [LICENSE](LICENSE) i [LICENSE-EXCEPTION.md](LICENSE-EXCEPTION.md).
 
 - **Gemini (Google)**: osnova koda builder-a i gatekeeper-a
 - **ChatGPT (OpenAI)**: pregled i predlozi
-- **Perplexity**: pregled koda (semantika monitor/enforcement, čuvanje ljudskih odluka kroz rebuild, UTF-8 bezbedno logovanje, konkurentna aktivacija)
+- **Perplexity**: pregled koda (semantika monitor/enforcement, čuvanje ljudskih odluka kroz rebuild, UTF-8 bezbedno logovanje, konkurentna aktivacija, politika odluka i aktivacije)
 - **Claude (Anthropic)**: elaboracija koncepta i arhitekture, pregled i testiranje koda (smoke matrica, testovi sa namerno pokvarenim gate-om), `tools/aceshrug_gen.py`, dokumentacija

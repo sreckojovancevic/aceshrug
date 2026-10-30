@@ -6,7 +6,7 @@
 
 [Srpski / Serbian](README.sr.md)
 
-Status: **v0.3.1, experimental.** Monitor mode has been tested on a production PHP application (Apache + mod_php, PHP 8.3). Enforcement mode is not production-ready yet.
+Status: **v0.3.2, experimental.** Monitor mode has been tested on a production PHP application (Apache + mod_php, PHP 8.3). Enforcement mode is not production-ready yet.
 
 ---
 
@@ -39,7 +39,7 @@ The full concept and workflow are in [docs/ACESHRUG-workflow.md](docs/ACESHRUG-w
 2. The gate is enabled through `auto_prepend_file`. **Application code is never modified.**
 3. Before every request the gate checks the route, SAPI, method, entry-file hash, include integrity and parameter schema.
 4. **Monitor** mode records contract violations without blocking. **Enforcement** blocks, and only for items a human has confirmed (`status: confirmed`) or rejected (`status: rejected`). An invalid manifest or configuration is fatal in both modes.
-5. Human decisions live in a separate file (`<output>.decisions.json`) that the builder never overwrites, so confirmations survive rebuilds. If a confirmed file changes, its decision goes back to review automatically.
+5. Human decisions live in a separate file (`<output>.decisions.json`) that the builder never overwrites, so confirmations survive rebuilds. If a confirmed file changes, its decision goes back to review automatically (and in enforcement mode the build stops until it is reviewed). A rejected item stays rejected.
 
 ---
 
@@ -135,5 +135,5 @@ See [LICENSE](LICENSE) and [LICENSE-EXCEPTION.md](LICENSE-EXCEPTION.md).
 
 - **Gemini (Google)**: base code of the builder and the gatekeeper
 - **ChatGPT (OpenAI)**: review and suggestions
-- **Perplexity**: code review (monitor/enforcement semantics, preserving human decisions across rebuilds, UTF-8 safe logging, concurrent activation)
+- **Perplexity**: code review (monitor/enforcement semantics, preserving human decisions across rebuilds, UTF-8 safe logging, concurrent activation, decision and activation policy)
 - **Claude (Anthropic)**: elaboration of the concept and architecture, code review and testing (smoke matrix, tests with deliberately broken gates), `tools/aceshrug_gen.py`, documentation

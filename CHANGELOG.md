@@ -2,7 +2,18 @@
 
 Verzije builder-a (`builder/aceshrug_build.py`). Svaka verzija je pregledana i pokrenuta. Od v0.2.11 nadalje provera uključuje i testove sa namerno pokvarenim gate-om, koji proveravaju da smoke test zaista hvata kvar.
 
-## v0.3.1 (trenutna)
+## v0.3.2 (trenutna)
+Politika odluka i aktivacije, bez novih funkcija. Pravilo: promena koda može tražiti novo odobrenje, ali ne sme neprimetno pretvoriti zabranu u propuštanje.
+- **`rejected` ostaje `rejected`** posle izmene fajla (ruta i parametri). U v0.3.1 zastarela `rejected` ruta postajala je `auto`, pa se u enforcement režimu propuštala.
+- **`confirmed` ruta mora imati `sha256`.** Bez hash-a potvrda bi važila i za buduće izmene koda.
+- **Enforcement sa zastarelim potvrdama ne aktivira se** (izlazni kod 4, aktivna verzija ostaje). Opt-out: `--accept-stale`.
+- **`null` politika:** u monitor režimu samo signal (`logged_allow_would_drop`); uklanjanje samo u enforcement režimu na potvrđenoj ruti, i iz `$_REQUEST`.
+- Validacija decisions fajla: `routes`/`unknown_policy`/`params` moraju biti objekti (ranije `AttributeError`); `max: true` se odbija (`bool` je u Python-u podtip `int`).
+- Provera regex-a je fail-closed: pad PHP procesa ili neispravan izlaz zaustavlja build (ranije je prazan izlaz značio "svi regex-i ispravni").
+- Smoke test: parametarski sentinel sa skriptom koja stvarno pokušava upis (uz kontrolni slučaj koji dokazuje da test radi); tri scenarija za `null` politiku.
+- Provereno sa 4 nova namerno pokvarena gate-a: svi odbijeni.
+
+## v0.3.1
 - **Ljudske odluke u posebnom fajlu** `<output>.decisions.json`, koji builder nikad ne prepisuje. Spaja se sa analizom pri svakom build-u: odluka ima prednost (status, `mode`, `unknown_policy`, metode, SAPI, pravila parametara uključujući `regex` i ručno dodate parametre).
 - **Zastarele odluke:** ako se fajl potvrđene rute promeni (drugi hash), ruta i njeni parametri vraćaju se na `auto`, uz sekciju u REPORT-u.
 - `--export-decisions`: pravi decisions fajl iz trenutno aktivnog manifesta. `--decisions PATH` zadaje drugu lokaciju.

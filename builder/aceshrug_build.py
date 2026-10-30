@@ -14,10 +14,10 @@ import uuid
 import fcntl
 from datetime import datetime, timezone
 
-# --- GATEKEEPER STUB (v0.3.1 - Enterprise Hardened RASP) ---
+# --- GATEKEEPER STUB (v0.3.2 - Enterprise Hardened RASP) ---
 GATE_PHP_STUB = """<?php
 /**
- * ACESHRUG Gatekeeper v0.3.1 (Enterprise Hardened Runtime)
+ * ACESHRUG Gatekeeper v0.3.2 (Enterprise Hardened Runtime)
  * Učitava se preko auto_prepend_file. Koristi keširani manifest.php.
  */
 if (defined('ACESHRUG_GATE')) {
@@ -181,8 +181,17 @@ function aceshrug_validate_inputs($allowed_params, $policy, $mode, $route_status
             if (!array_key_exists($key, $schema)) {
                 $action_policy = $policy[$src_name] ?? 'allow_with_signal';
                 if ($action_policy === 'null') {
-                    unset($data[$key]);
-                    aceshrug_event("unknown_parameter_dropped", "$src_name: $key", "info", "dropped");
+                    if ($mode === 'enforcement' && $route_status === 'confirmed') {
+                        unset($data[$key]);
+                        $elsewhere = false;
+                        foreach (['GET' => $_GET, 'POST' => $_POST, 'COOKIE' => $_COOKIE] as $o_name => $o_data) {
+                            if ($o_name !== $src_name && is_array($o_data) && array_key_exists($key, $o_data)) { $elsewhere = true; }
+                        }
+                        if (!$elsewhere && isset($_REQUEST) && is_array($_REQUEST)) { unset($_REQUEST[$key]); }
+                        aceshrug_event("unknown_parameter_dropped", "$src_name: $key", "info", "dropped");
+                    } else {
+                        aceshrug_event("unknown_parameter", "$src_name: $key", "info", "logged_allow_would_drop");
+                    }
                 } else {
                     $enforce_action = ($action_policy === 'block' && $mode === 'enforcement' && $route_status === 'confirmed') ? 'blocked' : 'logged_allow';
                     aceshrug_event("unknown_parameter", "$src_name: $key", "info", $enforce_action);
@@ -481,6 +490,9 @@ def load_decisions(path):
         return None, ["decisions fajl mora biti JSON objekat"]
     if d.get("mode", "monitor") not in VALID_MODE:
         errs.append(f"mode mora biti jedno od {VALID_MODE}")
+    for key in ("unknown_policy", "routes"):
+        if key in d and not isinstance(d[key], dict):
+            return None, [f"{key} mora biti JSON objekat"]
     for src, pol in (d.get("unknown_policy") or {}).items():
         if pol not in VALID_POLICY:
             errs.append(f"unknown_policy.{src}: '{pol}' nije dozvoljeno")
@@ -491,6 +503,10 @@ def load_decisions(path):
             errs.append(f"routes.{rp}.status: '{rd.get('status')}' nije dozvoljen {VALID_STATUS}")
         if "sha256" in rd and not re.fullmatch(r"[a-f0-9]{64}", str(rd["sha256"])):
             errs.append(f"routes.{rp}.sha256: nije ispravan (64 mala heks znaka)")
+        if rd.get("status") == "confirmed" and "sha256" not in rd:
+            errs.append(f"routes.{rp}: confirmed ruta mora imati sha256 (potvrda vazi samo za konkretan sadrzaj fajla)")
+        if "params" in rd and not isinstance(rd["params"], dict):
+            errs.append(f"routes.{rp}.params: mora biti objekat"); continue
         if "sapi" in rd and rd["sapi"] not in ("web", "cli"):
             errs.append(f"routes.{rp}.sapi: mora biti web ili cli")
         if "methods" in rd and (not isinstance(rd["methods"], list) or not all(isinstance(m, str) for m in rd["methods"])):
@@ -498,6 +514,8 @@ def load_decisions(path):
         for src, pd in (rd.get("params") or {}).items():
             if src not in ("GET", "POST", "COOKIE"):
                 errs.append(f"routes.{rp}.params.{src}: nepoznat izvor"); continue
+            if pd is not None and not isinstance(pd, dict):
+                errs.append(f"routes.{rp}.params.{src}: mora biti objekat"); continue
             for pk, rule in (pd or {}).items():
                 if not isinstance(rule, dict):
                     errs.append(f"routes.{rp}.params.{src}.{pk}: mora biti objekat"); continue
@@ -505,7 +523,7 @@ def load_decisions(path):
                     errs.append(f"routes.{rp}.params.{src}.{pk}.status: '{rule.get('status')}' nije dozvoljen")
                 if rule.get("type", "string") not in VALID_TYPE:
                     errs.append(f"routes.{rp}.params.{src}.{pk}.type: '{rule.get('type')}' nije podrzan")
-                if "max" in rule and (not isinstance(rule["max"], int) or rule["max"] < 0):
+                if "max" in rule and (type(rule["max"]) is not int or rule["max"] < 0):
                     errs.append(f"routes.{rp}.params.{src}.{pk}.max: mora biti ceo broj >= 0")
     return d, errs
 
@@ -522,10 +540,15 @@ def check_regexes(routes):
         return []
     code = '$bad=[]; foreach (json_decode(stream_get_contents(STDIN), true) as $x) { if (!is_string($x[1]) || @preg_match($x[1], "") === false) $bad[] = $x[0]; } echo json_encode($bad);'
     res = subprocess.run(['php', '-r', code], input=json.dumps(rx).encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if res.returncode != 0:
+        return [f"PHP provera regex-a nije uspela (kod {res.returncode}): {res.stderr.decode(errors='replace').strip()[:300]}"]
     try:
-        return json.loads(res.stdout.decode() or "[]")
+        result = json.loads(res.stdout.decode())
     except Exception:
-        return ["provera regex-a nije uspela"]
+        return ["PHP provera regex-a vratila je neispravan izlaz"]
+    if not isinstance(result, list):
+        return ["PHP provera regex-a vratila je neocekivan rezultat"]
+    return result
 
 
 def apply_decisions(routes, decisions):
@@ -537,9 +560,12 @@ def apply_decisions(routes, decisions):
             continue
         r = routes[rp]
         is_stale = "sha256" in rd and rd["sha256"] != r["sha256"]
-        if is_stale:
+        prev_st = rd.get("status", r["status"])
+        if is_stale and prev_st != "rejected":
             stale.append(rp)
-        r["status"] = "auto" if is_stale else rd.get("status", r["status"])
+        prev = rd.get("status", r["status"])
+        # zabrana nikad ne slabi zbog promene koda; potvrda vazi samo za sadrzaj koji je pregledan
+        r["status"] = "rejected" if prev == "rejected" else ("auto" if is_stale else prev)
         for k in ("methods", "sapi"):
             if k in rd:
                 r[k] = rd[k]
@@ -549,7 +575,7 @@ def apply_decisions(routes, decisions):
                 merged = dict(dst.get(pk, {}))
                 merged.update(rule)
                 merged.pop("todo", None)
-                if is_stale:
+                if is_stale and merged.get("status") != "rejected":
                     merged["status"] = "auto"
                 dst[pk] = merged
         if not is_stale:
@@ -583,7 +609,7 @@ def export_decisions(active_manifest_path, decisions_path):
 
 
 def run_smoke_test(temp_output_path):
-    """Proširena smoke matrica (v0.3.1) sa sentinel testom i proverom statusa."""
+    """Proširena smoke matrica (v0.3.2) sa sentinel testom i proverom statusa."""
     test_dir = tempfile.mkdtemp(prefix="aceshrug_smoke_")
     try:
         app_dir = os.path.join(test_dir, "app")
@@ -614,27 +640,27 @@ def run_smoke_test(temp_output_path):
         
         fixture_prepend = os.path.join(test_dir, "fixture_prepend.php")
         with open(fixture_prepend, "w") as f:
-            f.write("<?php\nif(getenv('SIM_GET')!==false) { parse_str(getenv('SIM_GET'), $_GET); }\nif(getenv('SIM_POST')!==false) { parse_str(getenv('SIM_POST'), $_POST); }\nrequire_once '" + dst_gate + "';\n")
+            f.write("<?php\nif(getenv('SIM_GET')!==false) { parse_str(getenv('SIM_GET'), $_GET); }\nif(getenv('SIM_POST')!==false) { parse_str(getenv('SIM_POST'), $_POST); }\n$_REQUEST = array_merge($_GET, $_POST);\nrequire_once '" + dst_gate + "';\n")
 
-        def execute_test(mode, script_path, expected_output, expected_code, expected_event=None, route_status="confirmed", param_schema=None, custom_manifest=None, sim_get="", expect_sentinel_artifact=None):
+        def execute_test(mode, script_path, expected_output, expected_code, expected_event=None, route_status="confirmed", param_schema=None, custom_manifest=None, sim_get="", expect_sentinel_artifact=None, policy=None, expect_sentinel_created=None, route_file="probe.php"):
             if custom_manifest:
                 manifest_data = custom_manifest
             else:
                 manifest_data = {
                     "format_version": 2,
-                    "engine_version": "0.3.1",
+                    "engine_version": "0.3.2",
                     "application_id": "smoke_test",
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "mode": mode,
                     "app_root": app_dir,
-                    "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
+                    "unknown_policy": policy or {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
                     "routes": {
-                        "probe.php": {
+                        route_file: {
                             "type": "ENTRYPOINT",
                             "status": route_status,
                             "sapi": "cli",
                             "methods": ["GET", "POST"],
-                            "sha256": probe_hash,
+                            "sha256": hashlib.sha256(open(os.path.join(app_dir, route_file), "rb").read()).hexdigest(),
                             "params": param_schema or {"GET": {}, "POST": {}, "COOKIE": {}}
                         }
                     },
@@ -651,6 +677,9 @@ def run_smoke_test(temp_output_path):
             
             if os.path.exists(events_log_path):
                 os.remove(events_log_path)
+            for sf in (expect_sentinel_artifact, expect_sentinel_created):
+                if sf and os.path.exists(sf):
+                    os.remove(sf)
             
             env = os.environ.copy()
             env.pop("SIM_GET", None)
@@ -691,6 +720,9 @@ def run_smoke_test(temp_output_path):
                 if exists:
                     print(f"[-] Sentinel test fail: artifact '{expect_sentinel_artifact}' was created despite block!")
                     return False
+            if expect_sentinel_created is not None and not os.path.exists(expect_sentinel_created):
+                print(f"[-] Sentinel test fail: aplikacija nije izvrsila upis '{expect_sentinel_created}' (test nije validan)")
+                return False
 
             return True
 
@@ -708,7 +740,7 @@ def run_smoke_test(temp_output_path):
         tamper_hash = hashlib.sha256(b"<?php echo 'BODY-OK';").hexdigest() # Mismatch sa manifestom
 
         bad_route_manifest = {
-            "format_version": 2, "engine_version": "0.3.1", "application_id": "smoke_test",
+            "format_version": 2, "engine_version": "0.3.2", "application_id": "smoke_test",
             "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
             "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
             "routes": {"tamper_test.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "cli", "methods": ["GET"], "sha256": tamper_hash, "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
@@ -718,7 +750,7 @@ def run_smoke_test(temp_output_path):
 
         # Scenario 6: include_tampered
         bad_manifest = {
-            "format_version": 2, "engine_version": "0.3.1", "application_id": "smoke_test",
+            "format_version": 2, "engine_version": "0.3.2", "application_id": "smoke_test",
             "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
             "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
             "routes": {"probe.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "cli", "methods": ["GET"], "sha256": probe_hash, "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
@@ -738,12 +770,31 @@ def run_smoke_test(temp_output_path):
         conf_schema = {"GET": {"id": {"type": "string", "max": 3, "status": "confirmed"}}, "POST": {}, "COOKIE": {}}
         if not execute_test("enforcement", probe_path, "", 1, expected_event="max_length_exceeded", route_status="confirmed", param_schema=conf_schema, sim_get="id=toolongvalue", expect_sentinel_artifact=sentinel_file): return False
 
+        # Parametarski sentinel: skripta STVARNO pokusava upis; gate mora da ga spreci
+        side_sentinel = os.path.join(test_dir, "side_effect.txt")
+        side_script = os.path.join(app_dir, "side.php")
+        with open(side_script, "wb") as f:
+            f.write(f"<?php file_put_contents('{side_sentinel}', 'x'); echo 'SIDE-OK';".encode())
+        # kontrola: bez prekrsaja upis se desava (dokaz da je test ziv)
+        if not execute_test("enforcement", side_script, "SIDE-OK", 0, expected_event=None, param_schema=conf_schema, sim_get="id=ok", expect_sentinel_created=side_sentinel, route_file="side.php"): return False
+        # prekrsaj potvrdjenog parametra: upis se ne sme desiti
+        if not execute_test("enforcement", side_script, "", 1, expected_event="max_length_exceeded", param_schema=conf_schema, sim_get="id=toolongvalue", expect_sentinel_artifact=side_sentinel, route_file="side.php"): return False
+
+        # null politika: monitor ne menja ulaz, enforcement+confirmed uklanja (i iz $_REQUEST)
+        echo_script = os.path.join(app_dir, "echo.php")
+        with open(echo_script, "wb") as f:
+            f.write(b"<?php echo 'G:', isset($_GET['x']) ? 'Y' : 'N', ' R:', isset($_REQUEST['x']) ? 'Y' : 'N';")
+        null_pol = {"GET": "null", "POST": "null", "COOKIE": "allow_with_signal"}
+        if not execute_test("monitor", echo_script, "G:Y R:Y", 0, expected_event="logged_allow_would_drop", policy=null_pol, sim_get="x=1", route_file="echo.php"): return False
+        if not execute_test("enforcement", echo_script, "G:Y R:Y", 0, expected_event="logged_allow_would_drop", route_status="auto", policy=null_pol, sim_get="x=1", route_file="echo.php"): return False
+        if not execute_test("enforcement", echo_script, "G:N R:N", 0, expected_event="unknown_parameter_dropped", policy=null_pol, sim_get="x=1", route_file="echo.php"): return False
+
         return True
     finally:
         shutil.rmtree(test_dir, ignore_errors=True)
 
 def main():
-    parser = argparse.ArgumentParser(description="ACESHRUG Universal Builder v0.3.1")
+    parser = argparse.ArgumentParser(description="ACESHRUG Universal Builder v0.3.2")
     parser.add_argument("--input", help="Ulazni direktorijum aplikacije (read-only)")
     parser.add_argument("--output", required=True, help="Izlazni ACESHRUG direktorijum (symlink baza)")
     parser.add_argument("--php-user", default="www-data", help="Sistemski korisnik za pool.conf")
@@ -752,6 +803,7 @@ def main():
     parser.add_argument("--keep", type=int, default=5, help="Broj verzija koje se čuvaju (minimum 1)")
     parser.add_argument("--rollback", action="store_true", help="Vrati symlink na prethodnu verziju")
     parser.add_argument("--strict", action="store_true", help="Odbij aktivaciju ako postoje auto rute ili parametri")
+    parser.add_argument("--accept-stale", action="store_true", help="U enforcement rezimu dozvoli aktivaciju iako su neke potvrde zastarele (promenjen fajl)")
     parser.add_argument("--decisions", help="Fajl sa ljudskim odlukama (podrazumevano: <output>.decisions.json)")
     parser.add_argument("--export-decisions", action="store_true", help="Napravi decisions fajl iz trenutno aktivnog manifesta i izadji")
 
@@ -854,6 +906,13 @@ def main():
                 print(f"    - {b}")
             sys.exit(1)
 
+        if stale and decisions.get("mode") == "enforcement" and not args.accept_stale:
+            print(f"[-] Greška: enforcement režim, a {len(stale)} potvrđenih ruta je promenjeno od pregleda:")
+            for sp in stale[:20]:
+                print(f"    - {sp}")
+            print("    Aktivni manifest ostaje nepromenjen. Pregledaj izmene i obnovi potvrde (sha256), ili pokreni sa --accept-stale (te rute prelaze u auto).")
+            sys.exit(4)
+
         if args.strict and has_auto_items:
             print(f"[-] Greška: Režim --strict je uključen, ali postoje rute ili parametri sa 'auto' statusom.")
             sys.exit(3)
@@ -870,7 +929,7 @@ def main():
 
             report_path = os.path.join(temp_output_path, "REPORT.md")
             with open(report_path, "w", encoding="utf-8") as rep:
-                rep.write("# ACESHRUG Universal Analysis Report (v0.3.1)\n\n")
+                rep.write("# ACESHRUG Universal Analysis Report (v0.3.2)\n\n")
                 rep.write(f"- **Scan Date:** {datetime.now(timezone.utc).isoformat()}\n")
                 rep.write(f"- **Ukupno PHP fajlova:** {len(all_files)}\n")
                 rep.write(f"- **Entrypoint ruta:** {len(routes)}\n")
@@ -898,7 +957,7 @@ def main():
 
             manifest_data = {
                 "format_version": 2,
-                "engine_version": "0.3.1",
+                "engine_version": "0.3.2",
                 "application_id": os.path.basename(input_path),
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "mode": decisions.get("mode", "monitor"),
@@ -993,7 +1052,7 @@ php_admin_flag[expose_php] = Off
                     if old_v != active_target and os.path.exists(os.path.join(old_v, ".aceshrug-generated")):
                         shutil.rmtree(old_v)
 
-            print(f"[✔] ACESHRUG v0.3.1 uspešno generisan i aktiviran preko symlink-a: {output_path}")
+            print(f"[✔] ACESHRUG v0.3.2 uspešno generisan i aktiviran preko symlink-a: {output_path}")
 
             if stale:
                 print(f"[!] Upozorenje: {len(stale)} odluka je zastarelo (fajl promenjen) i vraceno na auto. Vidi REPORT.md.")
