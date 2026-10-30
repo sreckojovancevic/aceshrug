@@ -1,8 +1,8 @@
-# ACESHRUG builder: uputstvo (v0.2.16)
+# ACESHRUG builder: uputstvo (v0.3.1)
 
 Builder analizira PHP aplikaciju i u direktorijumu **van webroot-a** pravi gatekeeper (`gate.php`), ugovor (`manifest.php`), šablon php-fpm pool-a (`pool.conf`) i izveštaj (`REPORT.md`). **Kod aplikacije ostaje netaknut**: gate se uključuje preko `auto_prepend_file`.
 
-Builder uvek aktivira **monitor** režim. **Enforcement** se uključuje ručno, i to blokira samo stavke koje je čovek potvrdio.
+Režim i potvrde dolaze iz **fajla sa ljudskim odlukama** (`<output>.decisions.json`), koji builder nikad ne prepisuje. Bez tog fajla sve je `auto`, a režim je **monitor**.
 
 ---
 
@@ -37,6 +37,9 @@ sudo python3 builder/aceshrug_build.py \
 | `--allow-blocker KOD` / `--allow-blocker fajl.php:KOD` | ručno odobrenje blokera (vidi tačku 6); zastavica se ponavlja za svaku vrednost |
 | `--keep N` | koliko verzija se čuva (podrazumevano 5) |
 | `--rollback` | vraća symlink na verziju pre aktivne |
+| `--decisions PATH` | fajl sa ljudskim odlukama (podrazumevano `<output>.decisions.json`) |
+| `--export-decisions` | pravi decisions fajl iz trenutno aktivnog manifesta i izlazi (`--input` nije potreban) |
+| `--strict` | odbija aktivaciju dok postoji ijedna `auto` stavka |
 
 ### Šta builder radi, redom
 1. Analizira kod: rute, include-ove, parametre, blokere.
@@ -96,7 +99,9 @@ sudo grep -c '"fatal_block"'  /var/log/aceshrug/app.log
 ```
 U monitor režimu `fatal_block` mora biti **0**.
 
-**Ako sajt vrati prazan 404**, odmah isključi konfiguraciju i pogledaj poslednji događaj u logu. Najčešći uzrok je `include_missing_or_outside`: builder (root) je video fajl koji PHP korisnik ne može da pročita, najčešće direktorijum sa pravima `000` (namerno isključen modul). Privremeno rešenje dok builder ne dobije proveru prava (vidi ROADMAP):
+**Ako sajt vrati prazan 404 u monitor režimu**, odmah isključi konfiguraciju i pogledaj poslednji događaj u logu. U monitor režimu blokira samo neispravan manifest ili konfiguracija (`manifest_*`, `fatal_block`).
+
+Česta pojava je `include_missing_or_outside`: builder (root) je video fajl koji PHP korisnik ne može da pročita, najčešće direktorijum sa pravima `000` (namerno isključen modul). Od v0.3.0 to je u monitor režimu samo signal, ali u enforcement režimu blokira, pa takve stavke treba izbaciti. Privremeno rešenje, dok builder ne dobije proveru prava (vidi ROADMAP):
 
 ```bash
 # 1. spisak stavki koje PHP korisnik ne vidi
@@ -155,23 +160,48 @@ Analiza je regex, pa može da uhvati i vendor kod, komentare i JS. Odobrenje:
 
 ---
 
-## 7. Status stavki i enforcement
+## 7. Ljudske odluke i enforcement
 
 Manifest v2 ima `status` po ruti i parametru:
 
-| Status | Enforcement |
-|---|---|
-| `auto` | samo signal (builder uvek piše `auto`) |
-| `confirmed` | blokada pri prekršaju |
-| `rejected` | SHRUG uvek |
+| Status | Monitor | Enforcement |
+|---|---|---|
+| `auto` | signal | signal (builder uvek predlaže `auto`) |
+| `confirmed` | signal | **blokada** pri prekršaju |
+| `rejected` | signal | **blokada** uvek |
 
-Za prelazak na enforcement treba:
-1. pregledati monitor signale i popraviti šeme;
-2. u `manifest.php` za proverene rute i parametre postaviti `'status' => 'confirmed'`, a zatim `'mode' => 'enforcement'`;
-3. pokrenuti `php -l` nad manifestom i ponovo učitati Apache, jer opcache kešira manifest;
-4. pratiti log; `"action":"blocked"` za legitimnog korisnika znači povratak u monitor.
+**Odluke se ne upisuju u manifest, nego u `<output>.decisions.json`.** Manifest se generiše pri svakom build-u, a decisions fajl je trajan i builder ga samo čita. Primer:
 
-Rute i parametri koji ostanu `auto` i dalje samo daju signal, pa se enforcement može uključivati postepeno.
+```json
+{
+  "mode": "enforcement",
+  "unknown_policy": { "COOKIE": "null" },
+  "routes": {
+    "login.php": {
+      "status": "confirmed",
+      "sha256": "<hash fajla u trenutku potvrde>",
+      "methods": ["GET", "POST"],
+      "params": {
+        "POST": {
+          "username": { "type": "string", "max": 20, "regex": "/^[a-zA-Z0-9_]{4,20}$/", "status": "confirmed" },
+          "password": { "type": "string", "max": 128, "status": "confirmed" }
+        }
+      }
+    },
+    "an1.php": { "status": "rejected" }
+  }
+}
+```
+
+Postupak:
+1. pustiti monitor i pregledati signale (tačka 5);
+2. napraviti početni decisions fajl: `--export-decisions` (iz aktivnog manifesta) ili ručno;
+3. potvrditi proverene rute i parametre, ručno dodati parametre koje analiza ne vidi (npr. one koji se čitaju preko `filter_input`), postaviti `mode`;
+4. ponovo pokrenuti builder. On validira fajl (statusi, tipovi, regex kroz PHP) i spaja odluke sa analizom.
+
+**Zastarele odluke:** ako je uz rutu zapisan `sha256`, a fajl se u međuvremenu promenio, builder tu rutu i njene parametre vraća na `auto` i navodi ih u REPORT-u pod "Zastarele odluke". Tako izmenjen kod nikad ne nasleđuje staru potvrdu bez pregleda.
+
+Enforcement se može uvoditi postepeno: rute koje ostanu `auto` i dalje samo daju signal.
 
 ---
 
@@ -188,10 +218,12 @@ Pre aktivacije builder pravi izolovanu probnu aplikaciju i pokreće stvarni `gat
 | 5 | enforcement, izmenjen ulazni fajl | prazno, kod 1, `file_tampered` |
 | 6 | enforcement, izmenjen include | prazno, kod 1, `include_tampered` |
 | 7 | neispravan manifest | prazno, kod 1, `manifest_structure_invalid` |
+| 7a | `rejected` ruta, monitor | izlaz, kod 0, `rejected_route_accessed` |
+| 7b | `rejected` ruta, enforcement | prazno, kod 1, `rejected_route_accessed` |
 | 8 | `auto` parametar sa prekršajem, enforcement | izlaz, kod 0, `max_length_exceeded` |
 | 9 | `confirmed` parametar sa prekršajem, enforcement | prazno, kod 1, `max_length_exceeded` |
 
-Provereno je da build odbija gate sa namerno ubačenim kvarovima: bez signala, bez prepoznavanja ruta, bez provere hash-a, monitor koji blokira, ignorisanje statusa, nikad ne blokira.
+Provereno je da build odbija gate sa namerno ubačenim kvarovima: bez signala, bez prepoznavanja ruta, bez provere hash-a, monitor koji blokira, `rejected` koji blokira u monitoru, ignorisanje statusa, nikad ne blokira.
 
 ---
 

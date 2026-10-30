@@ -8,7 +8,7 @@
 
 [English](README.md)
 
-Status: **v0.2.16, eksperimentalno.** Monitor režim je proveren na produkcionoj PHP aplikaciji (Apache + mod_php, PHP 8.3). Enforcement režim još nije za produkciju.
+Status: **v0.3.1, eksperimentalno.** Monitor režim je proveren na produkcionoj PHP aplikaciji (Apache + mod_php, PHP 8.3). Enforcement režim još nije za produkciju.
 
 ---
 
@@ -40,22 +40,24 @@ Ceo koncept, sa radnim tokom: [docs/ACESHRUG-workflow.md](docs/ACESHRUG-workflow
 1. **Builder** (`builder/aceshrug_build.py`) analizira aplikaciju i generiše `gate.php`, `manifest.php`, `pool.conf` i `REPORT.md` u direktorijum **van webroot-a**.
 2. Gate se uključuje preko `auto_prepend_file`. **Kod aplikacije se ne menja.**
 3. Gate pre svakog zahteva proverava rutu, SAPI, metodu, hash ulaznog fajla, integritet include-ova i šemu parametara.
-4. **Monitor** režim samo beleži. **Enforcement** blokira, i to samo stavke koje je čovek potvrdio (`status: confirmed`).
+4. **Monitor** režim beleži kršenja ugovora bez blokiranja. **Enforcement** blokira, i to samo stavke koje je čovek potvrdio (`status: confirmed`) ili odbio (`status: rejected`). Neispravan manifest ili konfiguracija su fatalni u oba režima.
+5. Ljudske odluke se čuvaju u posebnom fajlu (`<output>.decisions.json`), koji builder nikad ne prepisuje, pa potvrde preživljavaju rebuild. Ako se potvrđen fajl promeni, njegova odluka se automatski vraća na pregled.
 
 ---
 
 ## Od čega štiti, a od čega ne
 
 **U enforcement režimu ACESHRUG sprečava:**
-- direktno izvršavanje PHP fajlova koji nisu deklarisani u manifestu (npr. podmetnut webshell);
+- direktno izvršavanje PHP fajlova koji nisu deklarisani u manifestu (npr. webshell podmetnut **posle** build-a);
 - izvršavanje deklarisanih fajlova koji su izmenjeni posle build-a;
 - zahteve sa metodom ili parametrima van deklarisane šeme, za potvrđene rute i parametre.
 
 **Ne sprečava:**
+- zlonameran fajl koji je već postojao u trenutku build-a: builder popisuje zatečeno stanje, pa build uvek treba praviti iz pouzdanog release-a i pregledati rute;
 - izvršavanje koda kroz ranjivost u legitimnoj ruti (LFI, `unserialize`, `eval` u kodu aplikacije);
 - ranjivosti u samom PHP engine-u, npr. php2shell (CVE-2026-109618 / CVE-2026-109619). One se aktiviraju dok PHP parsira zahtev, pre nego što se gate učita. Tu je jedina zaštita ažuran PHP.
 
-Na serveru je potreban **PHP 7.0+** (trenutni gate koristi `??` i odmah pozvanu closure funkciju).
+Na serveru je potreban **PHP 7.0+** (gate koristi `??` i odmah pozvanu closure funkciju). `mbstring` nije obavezan.
 
 ---
 
@@ -83,7 +85,13 @@ sudo a2disconf aceshrug-app && sudo systemctl reload apache2
 
 Detaljno uputstvo, sa tumačenjem signala i prelaskom na enforcement: [docs/BUILDER-UPUTSTVO.md](docs/BUILDER-UPUTSTVO.md).
 
-> **Poznat problem u v0.2.16:** smoke fixture čita `$_ENV`, koji je prazan uz podrazumevani `variables_order=GPCS`, pa build pada na testu statusa. Privremeno rešenje: u `run_smoke_test` zameniti `isset($_ENV['SIM_GET'])` / `$_ENV['SIM_GET']` sa `getenv('SIM_GET')!==false` / `getenv('SIM_GET')`, i isto za `SIM_POST`. Vidi [CHANGELOG.md](CHANGELOG.md).
+Tok ljudskog pregleda:
+```bash
+# posle pregleda signala zapisati odluke (ručno u JSON, ili izvoz iz izmenjenog manifesta)
+sudo python3 builder/aceshrug_build.py --output /etc/aceshrug/app --export-decisions
+sudoedit /etc/aceshrug/app.decisions.json      # status: confirmed / rejected, mode: enforcement
+sudo python3 builder/aceshrug_build.py --input /var/www/html/app --output /etc/aceshrug/app
+```
 
 ---
 
@@ -129,4 +137,5 @@ Vidi [LICENSE](LICENSE) i [LICENSE-EXCEPTION.md](LICENSE-EXCEPTION.md).
 
 - **Gemini (Google)**: osnova koda builder-a i gatekeeper-a
 - **ChatGPT (OpenAI)**: pregled i predlozi
+- **Perplexity**: pregled koda (semantika monitor/enforcement, čuvanje ljudskih odluka kroz rebuild, UTF-8 bezbedno logovanje, konkurentna aktivacija)
 - **Claude (Anthropic)**: elaboracija koncepta i arhitekture, pregled i testiranje koda (smoke matrica, testovi sa namerno pokvarenim gate-om), `tools/aceshrug_gen.py`, dokumentacija

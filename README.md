@@ -6,7 +6,7 @@
 
 [Srpski / Serbian](README.sr.md)
 
-Status: **v0.2.16, experimental.** Monitor mode has been tested on a production PHP application (Apache + mod_php, PHP 8.3). Enforcement mode is not production-ready yet.
+Status: **v0.3.1, experimental.** Monitor mode has been tested on a production PHP application (Apache + mod_php, PHP 8.3). Enforcement mode is not production-ready yet.
 
 ---
 
@@ -38,22 +38,24 @@ The full concept and workflow are in [docs/ACESHRUG-workflow.md](docs/ACESHRUG-w
 1. The **builder** (`builder/aceshrug_build.py`) analyzes the application and generates `gate.php`, `manifest.php`, `pool.conf` and `REPORT.md` in a directory **outside the webroot**.
 2. The gate is enabled through `auto_prepend_file`. **Application code is never modified.**
 3. Before every request the gate checks the route, SAPI, method, entry-file hash, include integrity and parameter schema.
-4. **Monitor** mode only records. **Enforcement** blocks, and only for items a human has confirmed (`status: confirmed`).
+4. **Monitor** mode records contract violations without blocking. **Enforcement** blocks, and only for items a human has confirmed (`status: confirmed`) or rejected (`status: rejected`). An invalid manifest or configuration is fatal in both modes.
+5. Human decisions live in a separate file (`<output>.decisions.json`) that the builder never overwrites, so confirmations survive rebuilds. If a confirmed file changes, its decision goes back to review automatically.
 
 ---
 
 ## What it does and does not protect against
 
 **In enforcement mode, ACESHRUG prevents:**
-- direct execution of PHP files that are not declared in the manifest (for example an uploaded webshell);
+- direct execution of PHP files that are not declared in the manifest (for example a webshell uploaded **after** the build);
 - execution of declared files modified after the build;
 - requests whose method or parameters fall outside the declared schema, for confirmed routes and parameters.
 
 **It does not prevent:**
+- a malicious file that already existed when the build ran: the builder inventories what it finds, so always build from a trusted release and review the routes;
 - code execution through a vulnerability in a legitimate route (local file inclusion, `unserialize`, `eval` in application code);
 - vulnerabilities in the PHP engine itself, such as php2shell (CVE-2026-109618 / CVE-2026-109619), because they trigger while PHP parses the request, before the gate is loaded. The only protection there is an up-to-date PHP.
 
-Requires **PHP 7.0+** on the server (the current gate uses `??` and an immediately invoked closure).
+Requires **PHP 7.0+** on the server (the gate uses `??` and an immediately invoked closure). `mbstring` is optional.
 
 ---
 
@@ -81,7 +83,13 @@ sudo a2disconf aceshrug-app && sudo systemctl reload apache2
 
 Detailed guide, including how to read signals and switch to enforcement: [docs/BUILDER-UPUTSTVO.md](docs/BUILDER-UPUTSTVO.md) (Serbian).
 
-> **Known issue in v0.2.16:** the smoke-test fixture reads `$_ENV`, which is empty with the default `variables_order=GPCS`, so the build fails at the status test. Workaround: in `run_smoke_test`, replace `isset($_ENV['SIM_GET'])` / `$_ENV['SIM_GET']` with `getenv('SIM_GET')!==false` / `getenv('SIM_GET')`, and the same for `SIM_POST`. See [CHANGELOG.md](CHANGELOG.md).
+Human review workflow:
+```bash
+# after reviewing signals, record decisions (edit the JSON, or export from an edited manifest)
+sudo python3 builder/aceshrug_build.py --output /etc/aceshrug/app --export-decisions
+sudoedit /etc/aceshrug/app.decisions.json      # status: confirmed / rejected, mode: enforcement
+sudo python3 builder/aceshrug_build.py --input /var/www/html/app --output /etc/aceshrug/app
+```
 
 ---
 
@@ -127,4 +135,5 @@ See [LICENSE](LICENSE) and [LICENSE-EXCEPTION.md](LICENSE-EXCEPTION.md).
 
 - **Gemini (Google)**: base code of the builder and the gatekeeper
 - **ChatGPT (OpenAI)**: review and suggestions
+- **Perplexity**: code review (monitor/enforcement semantics, preserving human decisions across rebuilds, UTF-8 safe logging, concurrent activation)
 - **Claude (Anthropic)**: elaboration of the concept and architecture, code review and testing (smoke matrix, tests with deliberately broken gates), `tools/aceshrug_gen.py`, documentation

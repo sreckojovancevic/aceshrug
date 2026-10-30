@@ -2,7 +2,25 @@
 
 Verzije builder-a (`builder/aceshrug_build.py`). Svaka verzija je pregledana i pokrenuta. Od v0.2.11 nadalje provera uključuje i testove sa namerno pokvarenim gate-om, koji proveravaju da smoke test zaista hvata kvar.
 
-## v0.2.16 (trenutna)
+## v0.3.1 (trenutna)
+- **Ljudske odluke u posebnom fajlu** `<output>.decisions.json`, koji builder nikad ne prepisuje. Spaja se sa analizom pri svakom build-u: odluka ima prednost (status, `mode`, `unknown_policy`, metode, SAPI, pravila parametara uključujući `regex` i ručno dodate parametre).
+- **Zastarele odluke:** ako se fajl potvrđene rute promeni (drugi hash), ruta i njeni parametri vraćaju se na `auto`, uz sekciju u REPORT-u.
+- `--export-decisions`: pravi decisions fajl iz trenutno aktivnog manifesta. `--decisions PATH` zadaje drugu lokaciju.
+- Validacija decisions fajla (režim, politike, statusi, tipovi, `max`, hash, SAPI, metode) i provera svih regex-a kroz PHP pre build-a.
+- `rejected` u monitor režimu samo beleži, a blokira u enforcement režimu.
+- Gate: whitelist statusa (`auto`/`confirmed`/`rejected`); UTF-8 bezbedno skraćivanje bez obavezne mbstring ekstenzije; JSON flag kompatibilan sa PHP < 7.2.
+- Smoke test: `getenv()` umesto `$_ENV`; novi scenariji za `rejected` u oba režima.
+- Provereno testovima sa namerno pokvarenim gate-om (ignorisanje statusa, `rejected` koji blokira u monitoru, bez signala, nikad ne blokira): svi odbijeni.
+
+## v0.3.0
+- `flock` zaključavanje build-a i rollback-a; `--keep` ≥ 1; odbijanje prazne aplikacije; `--strict`.
+- Include greška u monitor režimu je signal, a ne blokada.
+- Politika `null` stvarno uklanja nepoznat parametar.
+- Sentinel test (blokirana skripta ne sme da napravi fajl).
+- Bolji regex za dinamički `include`/`require` (i `_once` i oblik sa zagradom).
+- Poznato: `$_ENV` u smoke fixture-u; nasleđivanje potvrda iz generisanog manifesta gubilo je `mode`, `regex` i ručno dodate parametre (rešeno u v0.3.1).
+
+## v0.2.16
 - Ime verzije je vreme + nasumični heks sufiks, uz `exist_ok=False`. Kolizija imena više ne može da prepiše niti obriše aktivnu verziju.
 - `except` nikad ne briše direktorijum na koji pokazuje aktivni symlink.
 - Smoke test dobija fixture prepend koji puni `$_GET`/`$_POST`. Testira se i status `auto` (prekršaj → samo signal) i `confirmed` (prekršaj → blokada).

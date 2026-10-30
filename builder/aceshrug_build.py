@@ -11,12 +11,13 @@ import pwd
 import grp
 import subprocess
 import uuid
+import fcntl
 from datetime import datetime, timezone
 
-# --- GATEKEEPER STUB (v0.2.16 - Production Hardened & Status Tested) ---
+# --- GATEKEEPER STUB (v0.3.1 - Enterprise Hardened RASP) ---
 GATE_PHP_STUB = """<?php
 /**
- * ACESHRUG Gatekeeper v0.2.16 (Production Hardened Runtime)
+ * ACESHRUG Gatekeeper v0.3.1 (Enterprise Hardened Runtime)
  * Učitava se preko auto_prepend_file. Koristi keširani manifest.php.
  */
 if (defined('ACESHRUG_GATE')) {
@@ -87,9 +88,14 @@ define('ACESHRUG_GATE', true);
         
         $clean_inc = str_replace(['/', chr(92)], DIRECTORY_SEPARATOR, $inc_path);
         $full_inc_path = realpath($app_root . DIRECTORY_SEPARATOR . $clean_inc);
-        if ($full_inc_path === false || strpos($full_inc_path, $prefix) !== 0 || !is_file($full_inc_path)) {
-            aceshrug_event("include_missing_or_outside", $inc_path, "fatal", "fatal_block");
-            aceshrug_block();
+        
+        $include_is_valid = ($full_inc_path !== false && strpos($full_inc_path, $prefix) === 0 && is_file($full_inc_path));
+        
+        if (!$include_is_valid) {
+            $action = ($mode === 'enforcement') ? 'blocked' : 'logged_allow';
+            aceshrug_event("include_missing_or_outside", $inc_path, "critical", $action);
+            if ($mode === 'enforcement') { aceshrug_block(); }
+            continue;
         }
         
         if (hash_file('sha256', $full_inc_path) !== $inc_meta['sha256']) {
@@ -108,9 +114,14 @@ define('ACESHRUG_GATE', true);
     
     $route_meta = $manifest['routes'][$rel_path];
     $route_status = $route_meta['status'] ?? 'auto';
-    if ($route_status === 'rejected') {
-        aceshrug_event("rejected_route_accessed", $rel_path, "critical", "blocked");
+    if (!in_array($route_status, ['auto', 'confirmed', 'rejected'], true)) {
+        aceshrug_event("manifest_structure_invalid", "Invalid route status", "fatal", "fatal_block");
         aceshrug_block();
+    }
+    if ($route_status === 'rejected') {
+        $action = ($mode === 'enforcement') ? 'blocked' : 'logged_allow';
+        aceshrug_event("rejected_route_accessed", $rel_path, "critical", $action);
+        if ($mode === 'enforcement') { aceshrug_block(); }
     }
     
     if (!isset($route_meta['sha256']) || !preg_match('/^[a-f0-9]{64}$/i', $route_meta['sha256'])) {
@@ -157,9 +168,9 @@ define('ACESHRUG_GATE', true);
 })();
 
 function aceshrug_validate_inputs($allowed_params, $policy, $mode, $route_status) {
-    $sources = ['GET' => $_GET, 'POST' => $_POST, 'COOKIE' => $_COOKIE];
+    $sources = ['GET' => &$_GET, 'POST' => &$_POST, 'COOKIE' => &$_COOKIE];
     
-    foreach ($sources as $src_name => $data) {
+    foreach ($sources as $src_name => &$data) {
         $schema = $allowed_params[$src_name] ?? [];
         if (!is_array($schema)) {
             aceshrug_event("manifest_structure_invalid", "Invalid param schema", "fatal", "fatal_block");
@@ -169,10 +180,15 @@ function aceshrug_validate_inputs($allowed_params, $policy, $mode, $route_status
         foreach ($data as $key => $val) {
             if (!array_key_exists($key, $schema)) {
                 $action_policy = $policy[$src_name] ?? 'allow_with_signal';
-                $enforce_action = ($action_policy === 'block' && $mode === 'enforcement' && $route_status === 'confirmed') ? 'blocked' : 'logged_allow';
-                aceshrug_event("unknown_parameter", "$src_name: $key", "info", $enforce_action);
-                if ($action_policy === 'block' && $mode === 'enforcement' && $route_status === 'confirmed') {
-                    aceshrug_block();
+                if ($action_policy === 'null') {
+                    unset($data[$key]);
+                    aceshrug_event("unknown_parameter_dropped", "$src_name: $key", "info", "dropped");
+                } else {
+                    $enforce_action = ($action_policy === 'block' && $mode === 'enforcement' && $route_status === 'confirmed') ? 'blocked' : 'logged_allow';
+                    aceshrug_event("unknown_parameter", "$src_name: $key", "info", $enforce_action);
+                    if ($action_policy === 'block' && $mode === 'enforcement' && $route_status === 'confirmed') {
+                        aceshrug_block();
+                    }
                 }
             } else {
                 $rule = $schema[$key];
@@ -180,9 +196,15 @@ function aceshrug_validate_inputs($allowed_params, $policy, $mode, $route_status
                 $max = $rule['max'] ?? 4096;
                 $p_status = $rule['status'] ?? 'auto';
                 
-                if ($p_status === 'rejected') {
-                    aceshrug_event("rejected_parameter_accessed", "$src_name.$key", "critical", "blocked");
+                if (!in_array($p_status, ['auto', 'confirmed', 'rejected'], true)) {
+                    aceshrug_event("manifest_structure_invalid", "Invalid parameter status", "fatal", "fatal_block");
                     aceshrug_block();
+                }
+                if ($p_status === 'rejected') {
+                    $action = ($mode === 'enforcement') ? 'blocked' : 'logged_allow';
+                    aceshrug_event("rejected_parameter_accessed", "$src_name.$key", "critical", $action);
+                    if ($mode === 'enforcement') { aceshrug_block(); }
+                    continue;
                 }
                 
                 if (!in_array($type, ['string', 'int', 'email', 'array'], true) || !is_int($max)) {
@@ -254,15 +276,33 @@ function aceshrug_event($reason, $detail, $severity, $action) {
         }
     }
 
-    $log_entry = json_encode([
+    // UTF-8 bezbedno skracivanje; radi i bez mbstring ekstenzije
+    $detail = (string)$detail;
+    if (function_exists('mb_strcut')) {
+        $safe_detail = mb_strcut($detail, 0, 128, 'UTF-8');
+    } else {
+        $safe_detail = substr($detail, 0, 128);
+        if (function_exists('iconv')) {
+            $tmp = @iconv('UTF-8', 'UTF-8//IGNORE', $safe_detail);
+            if ($tmp !== false) { $safe_detail = $tmp; }
+        }
+    }
+
+    $entry = [
         'timestamp' => gmdate('c'),
         'component' => 'ACESHRUG',
         'event' => $reason,
         'severity' => $severity,
         'action' => $action,
         'ip' => $ip,
-        'detail' => substr($detail, 0, 128)
-    ]);
+        'detail' => $safe_detail
+    ];
+
+    $json_flags = defined('JSON_INVALID_UTF8_SUBSTITUTE') ? constant('JSON_INVALID_UTF8_SUBSTITUTE') : 0;
+    $log_entry = json_encode($entry, $json_flags);
+    if ($log_entry === false) {
+        $log_entry = '{"component":"ACESHRUG","event":"log_encoding_failed"}';
+    }
     error_log("[ACESHRUG-EVENT] " . $log_entry);
 }
 
@@ -310,7 +350,7 @@ def python_to_php_array(obj, indent=4):
     else:
         return "'" + php_escape(obj) + "'"
 
-def analyze_codebase(input_dir, allowed_blockers=None):
+def analyze_codebase(input_dir, prev_manifest=None, allowed_blockers=None):
     if allowed_blockers is None:
         allowed_blockers = []
     
@@ -325,7 +365,7 @@ def analyze_codebase(input_dir, allowed_blockers=None):
         (r'\beval\s*\(', "eval", "eval() upotrebljen"),
         (r'\bextract\s*\(', "extract", "extract() upotrebljen"),
         (r'\$\s*\{?\s*\$[a-zA-Z_]\w*\s*\}?', "varvar", "Variable variables ($$var) upotrebljen"),
-        (r'\binclude\s*\$|\brequire\s*\$', "dyninclude", "Dinamički include/require sa promenljivom"),
+        (r'\b(?:include|require)(?:_once)?\s*\$|\b(?:include|require)(?:_once)?\s*\(\s*\$', "dyninclude", "Dinamički include/require sa promenljivom"),
         (r'\bparse_str\s*\([^,)]+\)', "parse_str", "parse_str() sa jednim argumentom")
     ]
 
@@ -353,6 +393,7 @@ def analyze_codebase(input_dir, allowed_blockers=None):
                         if bcode not in allowed_blockers and f"{relpath}:{bcode}" not in allowed_blockers:
                             blockers.append({"file": relpath, "code": bcode, "issue": desc})
 
+                # Comprehensive include/require path matching
                 matches = re.findall(r'\b(?:include|require)(?:_once)?\s*\(?\s*[\'"]([^\'"]+)[\'"]\s*\)?', content_text)
                 for m in matches:
                     norm_inc = os.path.normpath(os.path.join(os.path.dirname(relpath), m)).replace("\\", "/")
@@ -367,6 +408,9 @@ def analyze_codebase(input_dir, allowed_blockers=None):
         (r'`[^`]*`', "Backtick izvršavanje komandi", "critical"),
         (r'\bextract\s*\(', "extract() upotrebljen", "warning")
     ]
+
+    prev_routes = prev_manifest.get("routes", {}) if prev_manifest else {}
+    prev_includes = prev_manifest.get("includes", {}) if prev_manifest else {}
 
     for relpath, fhash in php_files.items():
         content_text = file_contents[relpath]
@@ -389,6 +433,10 @@ def analyze_codebase(input_dir, allowed_blockers=None):
             has_auto_items = True
 
         if relpath in included_targets:
+            inc_status = "auto"
+            if relpath in prev_includes and prev_includes[relpath].get("sha256") == fhash:
+                # include metadata preserve if needed
+                pass
             includes[relpath] = {
                 "type": "INCLUDE",
                 "sha256": fhash
@@ -396,24 +444,146 @@ def analyze_codebase(input_dir, allowed_blockers=None):
         else:
             sapi_type = "cli" if "cli" in relpath.lower() or "artisan" in relpath.lower() else "web"
             methods = ["GET", "POST"] if post_params or "POST" in content_text or "form" in content_text.lower() else ["GET"]
+            
+            # Ljudske odluke se NE nasledjuju iz generisanog manifesta, vec iz decisions fajla (apply_decisions)
+            r_status = "auto"
+            r_params = {"GET": get_params, "POST": post_params, "COOKIE": {}}
+            has_auto_items = True
+
             routes[relpath] = {
                 "type": "ENTRYPOINT",
-                "status": "auto",
+                "status": r_status,
                 "sapi": sapi_type,
                 "methods": methods,
                 "sha256": fhash,
-                "params": {
-                    "GET": get_params,
-                    "POST": post_params,
-                    "COOKIE": {}
-                }
+                "params": r_params
             }
-            has_auto_items = True
 
     return routes, includes, php_files, blockers, findings, has_todos, has_auto_items
 
+VALID_STATUS = ("auto", "confirmed", "rejected")
+VALID_MODE = ("monitor", "enforcement")
+VALID_POLICY = ("allow_with_signal", "block", "null")
+VALID_TYPE = ("string", "int", "email", "array")
+
+
+def load_decisions(path):
+    """Ucitava i validira fajl sa ljudskim odlukama. Vraca (dict, greske)."""
+    if not os.path.exists(path):
+        return {}, []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception as e:
+        return None, [f"decisions fajl nije ispravan JSON: {e}"]
+    errs = []
+    if not isinstance(d, dict):
+        return None, ["decisions fajl mora biti JSON objekat"]
+    if d.get("mode", "monitor") not in VALID_MODE:
+        errs.append(f"mode mora biti jedno od {VALID_MODE}")
+    for src, pol in (d.get("unknown_policy") or {}).items():
+        if pol not in VALID_POLICY:
+            errs.append(f"unknown_policy.{src}: '{pol}' nije dozvoljeno")
+    for rp, rd in (d.get("routes") or {}).items():
+        if not isinstance(rd, dict):
+            errs.append(f"routes.{rp}: mora biti objekat"); continue
+        if rd.get("status", "auto") not in VALID_STATUS:
+            errs.append(f"routes.{rp}.status: '{rd.get('status')}' nije dozvoljen {VALID_STATUS}")
+        if "sha256" in rd and not re.fullmatch(r"[a-f0-9]{64}", str(rd["sha256"])):
+            errs.append(f"routes.{rp}.sha256: nije ispravan (64 mala heks znaka)")
+        if "sapi" in rd and rd["sapi"] not in ("web", "cli"):
+            errs.append(f"routes.{rp}.sapi: mora biti web ili cli")
+        if "methods" in rd and (not isinstance(rd["methods"], list) or not all(isinstance(m, str) for m in rd["methods"])):
+            errs.append(f"routes.{rp}.methods: mora biti lista stringova")
+        for src, pd in (rd.get("params") or {}).items():
+            if src not in ("GET", "POST", "COOKIE"):
+                errs.append(f"routes.{rp}.params.{src}: nepoznat izvor"); continue
+            for pk, rule in (pd or {}).items():
+                if not isinstance(rule, dict):
+                    errs.append(f"routes.{rp}.params.{src}.{pk}: mora biti objekat"); continue
+                if rule.get("status", "auto") not in VALID_STATUS:
+                    errs.append(f"routes.{rp}.params.{src}.{pk}.status: '{rule.get('status')}' nije dozvoljen")
+                if rule.get("type", "string") not in VALID_TYPE:
+                    errs.append(f"routes.{rp}.params.{src}.{pk}.type: '{rule.get('type')}' nije podrzan")
+                if "max" in rule and (not isinstance(rule["max"], int) or rule["max"] < 0):
+                    errs.append(f"routes.{rp}.params.{src}.{pk}.max: mora biti ceo broj >= 0")
+    return d, errs
+
+
+def check_regexes(routes):
+    """Proverava sve regex-e kroz PHP (isti PCRE kao u gate-u)."""
+    rx = []
+    for rp, r in routes.items():
+        for src, pd in r.get("params", {}).items():
+            for pk, rule in pd.items():
+                if "regex" in rule:
+                    rx.append((f"{rp}:{src}.{pk}", rule["regex"]))
+    if not rx:
+        return []
+    code = '$bad=[]; foreach (json_decode(stream_get_contents(STDIN), true) as $x) { if (!is_string($x[1]) || @preg_match($x[1], "") === false) $bad[] = $x[0]; } echo json_encode($bad);'
+    res = subprocess.run(['php', '-r', code], input=json.dumps(rx).encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        return json.loads(res.stdout.decode() or "[]")
+    except Exception:
+        return ["provera regex-a nije uspela"]
+
+
+def apply_decisions(routes, decisions):
+    """Spaja analizu sa ljudskim odlukama. Odluka ima prednost; promenjen fajl vraca rutu na 'auto'."""
+    applied, stale, missing = [], [], []
+    for rp, rd in (decisions.get("routes") or {}).items():
+        if rp not in routes:
+            missing.append(rp)
+            continue
+        r = routes[rp]
+        is_stale = "sha256" in rd and rd["sha256"] != r["sha256"]
+        if is_stale:
+            stale.append(rp)
+        r["status"] = "auto" if is_stale else rd.get("status", r["status"])
+        for k in ("methods", "sapi"):
+            if k in rd:
+                r[k] = rd[k]
+        for src, pd in (rd.get("params") or {}).items():
+            dst = r["params"].setdefault(src, {})
+            for pk, rule in (pd or {}).items():
+                merged = dict(dst.get(pk, {}))
+                merged.update(rule)
+                merged.pop("todo", None)
+                if is_stale:
+                    merged["status"] = "auto"
+                dst[pk] = merged
+        if not is_stale:
+            applied.append(rp)
+    has_auto = any(
+        r["status"] == "auto" or any(rule.get("status", "auto") == "auto" for pd in r["params"].values() for rule in pd.values())
+        for r in routes.values())
+    return applied, stale, missing, has_auto
+
+
+def export_decisions(active_manifest_path, decisions_path):
+    """Pravi decisions fajl iz trenutno aktivnog manifesta (rute i parametri koji nisu 'auto', plus rezim)."""
+    res = subprocess.run(['php', '-r', '$m = require $argv[1]; echo json_encode($m);', active_manifest_path],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if res.returncode != 0:
+        raise RuntimeError(f"aktivni manifest nije moguce ucitati: {res.stderr.decode()}")
+    m = json.loads(res.stdout.decode())
+    out = {"mode": m.get("mode", "monitor"), "unknown_policy": m.get("unknown_policy", {}), "routes": {}}
+    for rp, r in (m.get("routes") or {}).items():
+        params = {src: {pk: rule for pk, rule in (pd or {}).items() if rule.get("status", "auto") != "auto"}
+                  for src, pd in (r.get("params") or {}).items()}
+        params = {src: pd for src, pd in params.items() if pd}
+        if r.get("status", "auto") != "auto" or params:
+            out["routes"][rp] = {"status": r.get("status", "auto"), "sha256": r.get("sha256"),
+                                 "sapi": r.get("sapi", "web"), "methods": r.get("methods", []), "params": params}
+    if os.path.exists(decisions_path):
+        shutil.copy2(decisions_path, decisions_path + ".bak")
+    with open(decisions_path, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=2, ensure_ascii=False)
+    return len(out["routes"])
+
+
 def run_smoke_test(temp_output_path):
-    """Proširena smoke matrica (v0.2.16) sa pokrivanjem auto vs confirmed status logike preko env fixture-a."""
+    """Proširena smoke matrica (v0.3.1) sa sentinel testom i proverom statusa."""
     test_dir = tempfile.mkdtemp(prefix="aceshrug_smoke_")
     try:
         app_dir = os.path.join(test_dir, "app")
@@ -442,18 +612,17 @@ def run_smoke_test(temp_output_path):
         
         events_log_path = os.path.join(test_dir, "events.log")
         
-        # Fixture prepend za punjenje $_GET / $_POST iz environment varijabli (za testiranje statusa)
         fixture_prepend = os.path.join(test_dir, "fixture_prepend.php")
         with open(fixture_prepend, "w") as f:
-            f.write("<?php\nif(isset($_ENV['SIM_GET'])) { parse_str($_ENV['SIM_GET'], $_GET); }\nif(isset($_ENV['SIM_POST'])) { parse_str($_ENV['SIM_POST'], $_POST); }\nrequire_once '" + dst_gate + "';\n")
+            f.write("<?php\nif(getenv('SIM_GET')!==false) { parse_str(getenv('SIM_GET'), $_GET); }\nif(getenv('SIM_POST')!==false) { parse_str(getenv('SIM_POST'), $_POST); }\nrequire_once '" + dst_gate + "';\n")
 
-        def execute_test(mode, script_path, expected_output, expected_code, expected_event=None, route_status="confirmed", param_schema=None, custom_manifest=None, sim_get=""):
+        def execute_test(mode, script_path, expected_output, expected_code, expected_event=None, route_status="confirmed", param_schema=None, custom_manifest=None, sim_get="", expect_sentinel_artifact=None):
             if custom_manifest:
                 manifest_data = custom_manifest
             else:
                 manifest_data = {
                     "format_version": 2,
-                    "engine_version": "0.2.16",
+                    "engine_version": "0.3.1",
                     "application_id": "smoke_test",
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "mode": mode,
@@ -484,6 +653,8 @@ def run_smoke_test(temp_output_path):
                 os.remove(events_log_path)
             
             env = os.environ.copy()
+            env.pop("SIM_GET", None)
+            env.pop("SIM_POST", None)
             if sim_get:
                 env["SIM_GET"] = sim_get
             
@@ -514,6 +685,13 @@ def run_smoke_test(temp_output_path):
                 if expected_event not in log_content:
                     print(f"[-] Smoke test fail [{mode}, {os.path.basename(script_path)}]: expected event '{expected_event}' not found in log: {log_content}")
                     return False
+
+            if expect_sentinel_artifact is not None:
+                exists = os.path.exists(expect_sentinel_artifact)
+                if exists:
+                    print(f"[-] Sentinel test fail: artifact '{expect_sentinel_artifact}' was created despite block!")
+                    return False
+
             return True
 
         # Test matrica
@@ -522,14 +700,25 @@ def run_smoke_test(temp_output_path):
         if not execute_test("enforcement", probe_path, "BODY-OK", 0, expected_event=None): return False
         if not execute_test("enforcement", other_path, "", 1, expected_event="unregistered_route"): return False
         
-        # Tamper test
-        with open(probe_path, "wb") as f: f.write(b"<?php echo 'TAMPERED';")
-        if not execute_test("enforcement", probe_path, "", 1, expected_event="file_tampered"): return False
-        with open(probe_path, "wb") as f: f.write(probe_code)
-        
+        # Tamper test sa Sentinel proverom da fajl nije nastao
+        sentinel_file = os.path.join(test_dir, "sentinel_artifact.txt")
+        tamper_script = os.path.join(app_dir, "tamper_test.php")
+        with open(tamper_script, "wb") as f:
+            f.write(f"<?php file_put_contents('{sentinel_file}', 'should_not_exist'); echo 'TAMPERED';".encode())
+        tamper_hash = hashlib.sha256(b"<?php echo 'BODY-OK';").hexdigest() # Mismatch sa manifestom
+
+        bad_route_manifest = {
+            "format_version": 2, "engine_version": "0.3.1", "application_id": "smoke_test",
+            "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
+            "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
+            "routes": {"tamper_test.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "cli", "methods": ["GET"], "sha256": tamper_hash, "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
+            "includes": {"include.php": {"type": "INCLUDE", "sha256": inc_hash}}
+        }
+        if not execute_test("enforcement", tamper_script, "", 1, expected_event="file_tampered", custom_manifest=bad_route_manifest, expect_sentinel_artifact=sentinel_file): return False
+
         # Scenario 6: include_tampered
         bad_manifest = {
-            "format_version": 2, "engine_version": "0.2.16", "application_id": "smoke_test",
+            "format_version": 2, "engine_version": "0.3.1", "application_id": "smoke_test",
             "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
             "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
             "routes": {"probe.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "cli", "methods": ["GET"], "sha256": probe_hash, "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
@@ -537,139 +726,205 @@ def run_smoke_test(temp_output_path):
         }
         if not execute_test("enforcement", probe_path, "", 1, expected_event="include_tampered", custom_manifest=bad_manifest): return False
 
-        # Scenario 10: neispravan manifest
-        invalid_manifest = {"format_version": 99}
-        if not execute_test("monitor", probe_path, "", 1, expected_event="manifest_structure_invalid", custom_manifest=invalid_manifest): return False
-
-        # Test statusa: auto parametar u enforcementu propušta prekršaj uz signal (max_length_exceeded)
+        # Test statusa: auto parametar u enforcementu propušta prekršaj uz signal
         auto_schema = {"GET": {"id": {"type": "string", "max": 3, "status": "auto"}}, "POST": {}, "COOKIE": {}}
         if not execute_test("enforcement", probe_path, "BODY-OK", 0, expected_event="max_length_exceeded", route_status="confirmed", param_schema=auto_schema, sim_get="id=toolongvalue"): return False
 
+        # rejected ruta: monitor samo belezi, enforcement blokira
+        if not execute_test("monitor", probe_path, "BODY-OK", 0, expected_event="rejected_route_accessed", route_status="rejected"): return False
+        if not execute_test("enforcement", probe_path, "", 1, expected_event="rejected_route_accessed", route_status="rejected"): return False
+
         # Test statusa: confirmed parametar u enforcementu blokira prekršaj
         conf_schema = {"GET": {"id": {"type": "string", "max": 3, "status": "confirmed"}}, "POST": {}, "COOKIE": {}}
-        if not execute_test("enforcement", probe_path, "", 1, expected_event="max_length_exceeded", route_status="confirmed", param_schema=conf_schema, sim_get="id=toolongvalue"): return False
+        if not execute_test("enforcement", probe_path, "", 1, expected_event="max_length_exceeded", route_status="confirmed", param_schema=conf_schema, sim_get="id=toolongvalue", expect_sentinel_artifact=sentinel_file): return False
 
         return True
     finally:
         shutil.rmtree(test_dir, ignore_errors=True)
 
 def main():
-    parser = argparse.ArgumentParser(description="ACESHRUG Universal Builder v0.2.16")
-    parser.add_argument("--input", required=True, help="Ulazni direktorijum aplikacije (read-only)")
+    parser = argparse.ArgumentParser(description="ACESHRUG Universal Builder v0.3.1")
+    parser.add_argument("--input", help="Ulazni direktorijum aplikacije (read-only)")
     parser.add_argument("--output", required=True, help="Izlazni ACESHRUG direktorijum (symlink baza)")
     parser.add_argument("--php-user", default="www-data", help="Sistemski korisnik za pool.conf")
     parser.add_argument("--php-group", default="www-data", help="Sistemska grupa za pool.conf")
     parser.add_argument("--allow-blocker", action="append", default=[], help="Ručno odobrenje")
-    parser.add_argument("--keep", type=int, default=5, help="Broj verzija koje se čuvaju")
+    parser.add_argument("--keep", type=int, default=5, help="Broj verzija koje se čuvaju (minimum 1)")
     parser.add_argument("--rollback", action="store_true", help="Vrati symlink na prethodnu verziju")
-    parser.add_argument("--force", action="store_true", help="Zameni izlazni direktorijum uz proveru markera")
+    parser.add_argument("--strict", action="store_true", help="Odbij aktivaciju ako postoje auto rute ili parametri")
+    parser.add_argument("--decisions", help="Fajl sa ljudskim odlukama (podrazumevano: <output>.decisions.json)")
+    parser.add_argument("--export-decisions", action="store_true", help="Napravi decisions fajl iz trenutno aktivnog manifesta i izadji")
 
     args = parser.parse_args()
 
-    output_path = os.path.abspath(args.output)
-
-    if args.rollback:
-        versions_dir = output_path + ".d"
-        current_link = output_path
-        if not os.path.islink(current_link):
-            print(f"[-] Greška: '{current_link}' nije simlink, rollback nije moguć.")
-            sys.exit(1)
-        active_target = os.path.realpath(current_link)
-        subdirs = sorted([os.path.join(versions_dir, d) for d in os.listdir(versions_dir) if os.path.isdir(os.path.join(versions_dir, d))])
-        try:
-            idx = subdirs.index(active_target)
-            if idx > 0:
-                prev_version = subdirs[idx - 1]
-            else:
-                print(f"[-] Greška: Nema starijih verzija od trenutne.")
-                sys.exit(1)
-        except ValueError:
-            if len(subdirs) >= 2:
-                prev_version = subdirs[-2]
-            else:
-                print(f"[-] Greška: Nema dovoljno prethodnih verzija.")
-                sys.exit(1)
-        
-        temp_link = output_path + ".tmp_link"
-        if os.path.islink(temp_link):
-            os.unlink(temp_link)
-        os.symlink(prev_version, temp_link)
-        os.replace(temp_link, current_link)
-        print(f"[✔] Uspešno izvršen pametan rollback na verziju: {prev_version}")
-        sys.exit(0)
-
-    input_path = os.path.realpath(args.input)
-    if not os.path.isdir(input_path):
-        print(f"[-] Greška: Ulazni direktorijum '{input_path}' ne postoji.")
+    if args.keep < 1:
+        print("[-] Greška: Parametar --keep mora biti najmanje 1.")
         sys.exit(1)
 
-    print(f"[*] Analiziram aplikaciju...")
-    routes, includes, all_files, blockers, findings, has_todos, has_auto_items = analyze_codebase(input_path, args.allow_blocker)
-
-    if blockers:
-        print(f"[-] Greška: Pronađeno je {len(blockers)} neodobrenih blokera u kodu. Aktivacija prekinuta.")
-        for b in blockers:
-            print(f"    - {b['file']} [kod: {b['code']}]: {b['issue']}")
-        sys.exit(2)
-
+    output_path = os.path.abspath(args.output)
     versions_parent = output_path + ".d"
     os.makedirs(versions_parent, exist_ok=True)
-    
-    # Jedinstveno ime verzije sa timestamp-om i uuid-om, sprečavanje race condition-a (Tačka 1)
-    timestamp_tag = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:6]
-    temp_output_path = os.path.join(versions_parent, timestamp_tag)
-    os.makedirs(temp_output_path, exist_ok=False)
-    os.chmod(temp_output_path, 0o750)
+    lock_file_path = output_path + ".lock"
 
-    try:
-        marker_file = os.path.join(temp_output_path, ".aceshrug-generated")
-        with open(marker_file, "w") as m:
-            m.write("aceshrug-managed-directory\n")
+    # Konkurentno zaključavanje build-a (flock)
+    with open(lock_file_path, "w") as lock_f:
+        try:
+            fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("[-] Greška: Drugi build je već u toku. Pokušajte ponovo kasnije.")
+            sys.exit(1)
 
-        # Generisanje REPORT.md (Povraćeno prema C07)
-        report_path = os.path.join(temp_output_path, "REPORT.md")
-        with open(report_path, "w", encoding="utf-8") as rep:
-            rep.write("# ACESHRUG Universal Analysis Report (v0.2.16)\n\n")
-            rep.write(f"- **Scan Date:** {datetime.now(timezone.utc).isoformat()}\n")
-            rep.write(f"- **Ukupno PHP fajlova:** {len(all_files)}\n")
-            rep.write(f"- **Entrypoint ruta:** {len(routes)}\n")
-            rep.write(f"- **Include fajlova:** {len(includes)}\n")
-            rep.write(f"- **Todo šeme prisutne:** {'Da (Monitor režim obavezan)' if has_todos else 'Ne'}\n")
-            rep.write(f"- **Auto stavke prisutne:** {'Da' if has_auto_items else 'Ne'}\n\n")
+        if args.rollback:
+            current_link = output_path
+            if not os.path.islink(current_link):
+                print(f"[-] Greška: '{current_link}' nije simlink, rollback nije moguć.")
+                sys.exit(1)
+            active_target = os.path.realpath(current_link)
+            subdirs = sorted([os.path.join(versions_parent, d) for d in os.listdir(versions_parent) if os.path.isdir(os.path.join(versions_parent, d))])
+            try:
+                idx = subdirs.index(active_target)
+                if idx > 0:
+                    prev_version = subdirs[idx - 1]
+                else:
+                    print(f"[-] Greška: Nema starijih verzija od trenutne.")
+                    sys.exit(1)
+            except ValueError:
+                if len(subdirs) >= 2:
+                    prev_version = subdirs[-2]
+                else:
+                    print(f"[-] Greška: Nema dovoljno prethodnih verzija.")
+                    sys.exit(1)
+            
+            temp_link = output_path + ".tmp_link"
+            if os.path.islink(temp_link):
+                os.unlink(temp_link)
+            os.symlink(prev_version, temp_link)
+            os.replace(temp_link, current_link)
+            print(f"[✔] Uspešno izvršen pametan rollback na verziju: {prev_version}")
+            sys.exit(0)
 
-            rep.write("## 📋 Rute po statusu\n")
-            for r_path, r_meta in routes.items():
-                rep.write(f"- `{r_path}` [status: {r_meta.get('status', 'auto')}, sapi: {r_meta.get('sapi')}]\n")
+        decisions_path = os.path.abspath(args.decisions) if args.decisions else output_path + ".decisions.json"
 
-        manifest_data = {
-            "format_version": 2,
-            "engine_version": "0.2.16",
-            "application_id": os.path.basename(input_path),
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "mode": "monitor",
-            "app_root": input_path,
-            "unknown_policy": {
-                "GET": "allow_with_signal",
-                "POST": "block",
-                "COOKIE": "allow_with_signal"
-            },
-            "routes": routes,
-            "includes": includes
-        }
+        if args.export_decisions:
+            active_manifest = os.path.join(output_path, "manifest.php")
+            if not os.path.exists(active_manifest):
+                print(f"[-] Greška: aktivni manifest '{active_manifest}' ne postoji.")
+                sys.exit(1)
+            try:
+                n = export_decisions(active_manifest, decisions_path)
+            except Exception as e:
+                print(f"[-] Greška: {e}")
+                sys.exit(1)
+            print(f"[✔] Decisions fajl napravljen: {decisions_path} ({n} ruta sa odlukama)")
+            sys.exit(0)
 
-        manifest_php_content = "<?php\nreturn " + python_to_php_array(manifest_data) + ";\n"
-        manifest_file = os.path.join(temp_output_path, "manifest.php")
-        with open(manifest_file, "w", encoding="utf-8") as f:
-            f.write(manifest_php_content)
+        if not args.input:
+            print("[-] Greška: --input je obavezan.")
+            sys.exit(1)
+        input_path = os.path.realpath(args.input)
+        if not os.path.isdir(input_path):
+            print(f"[-] Greška: Ulazni direktorijum '{input_path}' ne postoji.")
+            sys.exit(1)
 
-        gate_file = os.path.join(temp_output_path, "gate.php")
-        with open(gate_file, "w", encoding="utf-8") as f:
-            f.write(GATE_PHP_STUB)
+        decisions, derrs = load_decisions(decisions_path)
+        if derrs:
+            print(f"[-] Greška u decisions fajlu {decisions_path}:")
+            for e in derrs:
+                print(f"    - {e}")
+            sys.exit(1)
 
-        final_gate_path = os.path.join(output_path, "gate.php")
-        pool_conf = os.path.join(temp_output_path, "pool.conf")
-        with open(pool_conf, "w", encoding="utf-8") as f:
-            f.write(f"""[aceshrug_pool]
+        print(f"[*] Analiziram aplikaciju...")
+        routes, includes, all_files, blockers, findings, has_todos, has_auto_items = analyze_codebase(input_path, None, args.allow_blocker)
+
+        if not all_files:
+            print(f"[-] Greška: U ulaznom direktorijumu nije pronađen nijedan PHP fajl.")
+            sys.exit(1)
+
+        if blockers:
+            print(f"[-] Greška: Pronađeno je {len(blockers)} neodobrenih blokera u kodu. Aktivacija prekinuta.")
+            for b in blockers:
+                print(f"    - {b['file']} [kod: {b['code']}]: {b['issue']}")
+            sys.exit(2)
+
+        applied, stale, missing, has_auto_items = apply_decisions(routes, decisions)
+        bad_rx = check_regexes(routes)
+        if bad_rx:
+            print("[-] Greška: neispravan regex u pravilima:")
+            for b in bad_rx:
+                print(f"    - {b}")
+            sys.exit(1)
+
+        if args.strict and has_auto_items:
+            print(f"[-] Greška: Režim --strict je uključen, ali postoje rute ili parametri sa 'auto' statusom.")
+            sys.exit(3)
+
+        timestamp_tag = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:6]
+        temp_output_path = os.path.join(versions_parent, timestamp_tag)
+        os.makedirs(temp_output_path, exist_ok=False)
+        os.chmod(temp_output_path, 0o750)
+
+        try:
+            marker_file = os.path.join(temp_output_path, ".aceshrug-generated")
+            with open(marker_file, "w") as m:
+                m.write("aceshrug-managed-directory\n")
+
+            report_path = os.path.join(temp_output_path, "REPORT.md")
+            with open(report_path, "w", encoding="utf-8") as rep:
+                rep.write("# ACESHRUG Universal Analysis Report (v0.3.1)\n\n")
+                rep.write(f"- **Scan Date:** {datetime.now(timezone.utc).isoformat()}\n")
+                rep.write(f"- **Ukupno PHP fajlova:** {len(all_files)}\n")
+                rep.write(f"- **Entrypoint ruta:** {len(routes)}\n")
+                rep.write(f"- **Include fajlova:** {len(includes)}\n")
+                rep.write(f"- **Decisions fajl:** `{decisions_path}` {'(ucitan)' if decisions else '(ne postoji; sve je auto)'}\n")
+                rep.write(f"- **Rezim:** {decisions.get('mode', 'monitor')}\n")
+                rep.write(f"- **Primenjene odluke:** {len(applied)} ruta\n")
+                rep.write(f"- **Zastarele odluke (fajl promenjen, vraceno na auto):** {len(stale)}\n")
+                rep.write(f"- **Odluke za rute kojih vise nema:** {len(missing)}\n")
+                rep.write(f"- **Auto stavke prisutne:** {'Da' if has_auto_items else 'Ne'}\n\n")
+
+                if stale:
+                    rep.write("## ⚠ Zastarele odluke (potreban ponovni pregled)\n")
+                    for x in stale:
+                        rep.write(f"- `{x}`\n")
+                    rep.write("\n")
+                if missing:
+                    rep.write("## ⚠ Odluke za rute koje vise ne postoje\n")
+                    for x in missing:
+                        rep.write(f"- `{x}`\n")
+                    rep.write("\n")
+                rep.write("## 📋 Rute po statusu\n")
+                for r_path, r_meta in routes.items():
+                    rep.write(f"- `{r_path}` [status: {r_meta.get('status', 'auto')}, sapi: {r_meta.get('sapi')}]\n")
+
+            manifest_data = {
+                "format_version": 2,
+                "engine_version": "0.3.1",
+                "application_id": os.path.basename(input_path),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "mode": decisions.get("mode", "monitor"),
+                "app_root": input_path,
+                "unknown_policy": dict({
+                    "GET": "allow_with_signal",
+                    "POST": "block",
+                    "COOKIE": "allow_with_signal"
+                }, **(decisions.get("unknown_policy") or {})),
+                "routes": routes,
+                "includes": includes
+            }
+
+            manifest_php_content = "<?php\nreturn " + python_to_php_array(manifest_data) + ";\n"
+            manifest_file = os.path.join(temp_output_path, "manifest.php")
+            with open(manifest_file, "w", encoding="utf-8") as f:
+                f.write(manifest_php_content)
+
+            gate_file = os.path.join(temp_output_path, "gate.php")
+            with open(gate_file, "w", encoding="utf-8") as f:
+                f.write(GATE_PHP_STUB)
+
+            final_gate_path = os.path.join(output_path, "gate.php")
+            pool_conf = os.path.join(temp_output_path, "pool.conf")
+            with open(pool_conf, "w", encoding="utf-8") as f:
+                f.write(f"""[aceshrug_pool]
 user = {args.php_user}
 group = {args.php_group}
 listen = /run/php/php-fpm-aceshrug.sock
@@ -684,74 +939,77 @@ php_admin_flag[allow_url_include] = Off
 php_admin_flag[expose_php] = Off
 """)
 
-        for php_f in ['manifest.php', 'gate.php']:
-            fpath = os.path.join(temp_output_path, php_f)
-            res = subprocess.run(['php', '-l', fpath], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if res.returncode != 0:
-                raise RuntimeError(f"Sintaksna greška u generisanom fajlu {php_f}:\n{res.stderr.decode()}")
+            for php_f in ['manifest.php', 'gate.php']:
+                fpath = os.path.join(temp_output_path, php_f)
+                res = subprocess.run(['php', '-l', fpath], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                if res.returncode != 0:
+                    raise RuntimeError(f"Sintaksna greška u generisanom fajlu {php_f}:\n{res.stderr.decode()}")
 
-        test_script = f'$m = require "{manifest_file}"; var_dump(is_array($m) && ($m["format_version"] ?? 0) === 2);'
-        test_res = subprocess.run(['php', '-r', test_script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if b"bool(true)" not in test_res.stdout:
-            raise RuntimeError(f"Manifest v2 nije validan po strukturi:\n{test_res.stderr.decode()}")
+            test_script = f'$m = require "{manifest_file}"; var_dump(is_array($m) && ($m["format_version"] ?? 0) === 2);'
+            test_res = subprocess.run(['php', '-r', test_script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if b"bool(true)" not in test_res.stdout:
+                raise RuntimeError(f"Manifest v2 nije validan po strukturi:\n{test_res.stderr.decode()}")
 
-        if not run_smoke_test(temp_output_path):
-            raise RuntimeError("Smoke test neuspešan.")
+            if not run_smoke_test(temp_output_path):
+                raise RuntimeError("Smoke test neuspešan.")
 
-        if os.geteuid() == 0:
-            try:
-                root_uid = pwd.getpwnam("root").pw_uid
-                group_gid = grp.getgrnam(args.php_group).gr_gid
-                
-                os.chown(temp_output_path, root_uid, group_gid)
-                os.chmod(temp_output_path, 0o750)
-                
-                for root, dirs, files in os.walk(temp_output_path):
-                    for d in dirs:
-                        os.chown(os.path.join(root, d), root_uid, group_gid)
-                        os.chmod(os.path.join(root, d), 0o750)
-                    for f in files:
-                        os.chown(os.path.join(root, f), root_uid, group_gid)
-                        os.chmod(os.path.join(root, f), 0o640)
-            except Exception as e:
-                raise RuntimeError(f"Neuspešno postavljanje vlasništva/prava: {e}")
-        else:
-            print("[!] Upozorenje: Builder se ne pokreće kao root.")
+            if os.geteuid() == 0:
+                try:
+                    root_uid = pwd.getpwnam("root").pw_uid
+                    group_gid = grp.getgrnam(args.php_group).gr_gid
+                    
+                    os.chown(temp_output_path, root_uid, group_gid)
+                    os.chmod(temp_output_path, 0o750)
+                    
+                    for root, dirs, files in os.walk(temp_output_path):
+                        for d in dirs:
+                            os.chown(os.path.join(root, d), root_uid, group_gid)
+                            os.chmod(os.path.join(root, d), 0o750)
+                        for f in files:
+                            os.chown(os.path.join(root, f), root_uid, group_gid)
+                            os.chmod(os.path.join(root, f), 0o640)
+                except Exception as e:
+                    raise RuntimeError(f"Neuspešno postavljanje vlasništva/prava: {e}")
+            else:
+                print("[!] Upozorenje: Builder se ne pokreće kao root.")
 
-        chk_gate = os.path.join(temp_output_path, "gate.php")
-        chk_manifest = os.path.join(temp_output_path, "manifest.php")
-        read_chk_cmd = ['sudo', '-u', args.php_user, 'php', '-r', f'exit(is_readable("{chk_gate}") && is_readable("{chk_manifest}") ? 0 : 1);']
-        rc_res = subprocess.run(read_chk_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if rc_res.returncode != 0:
-            raise RuntimeError(f"Greška prava pristupa: PHP korisnik '{args.php_user}' ne može da pročita generisane fajlove.")
+            chk_gate = os.path.join(temp_output_path, "gate.php")
+            chk_manifest = os.path.join(temp_output_path, "manifest.php")
+            read_chk_cmd = ['sudo', '-u', args.php_user, 'php', '-r', f'exit(is_readable("{chk_gate}") && is_readable("{chk_manifest}") ? 0 : 1);']
+            rc_res = subprocess.run(read_chk_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if rc_res.returncode != 0:
+                raise RuntimeError(f"Greška prava pristupa: PHP korisnik '{args.php_user}' ne može da pročita generisane fajlove.")
 
-        temp_link = output_path + ".tmp_link"
-        if os.path.islink(temp_link):
-            os.unlink(temp_link)
-        os.symlink(temp_output_path, temp_link)
-        os.replace(temp_link, output_path)
+            temp_link = output_path + ".tmp_link"
+            if os.path.islink(temp_link):
+                os.unlink(temp_link)
+            os.symlink(temp_output_path, temp_link)
+            os.replace(temp_link, output_path)
 
-        all_versions = sorted([os.path.join(versions_parent, d) for d in os.listdir(versions_parent) if os.path.isdir(os.path.join(versions_parent, d))])
-        if len(all_versions) > args.keep:
-            for old_v in all_versions[:-args.keep]:
-                active_target = os.path.realpath(output_path) if os.path.islink(output_path) else ""
-                if old_v != active_target and os.path.exists(os.path.join(old_v, ".aceshrug-generated")):
-                    shutil.rmtree(old_v)
+            all_versions = sorted([os.path.join(versions_parent, d) for d in os.listdir(versions_parent) if os.path.isdir(os.path.join(versions_parent, d))])
+            if len(all_versions) > args.keep:
+                for old_v in all_versions[:-args.keep]:
+                    active_target = os.path.realpath(output_path) if os.path.islink(output_path) else ""
+                    if old_v != active_target and os.path.exists(os.path.join(old_v, ".aceshrug-generated")):
+                        shutil.rmtree(old_v)
 
-        print(f"[✔] ACESHRUG v0.2.16 uspešno generisan i aktiviran preko symlink-a: {output_path}")
+            print(f"[✔] ACESHRUG v0.3.1 uspešno generisan i aktiviran preko symlink-a: {output_path}")
 
-        if has_todos or has_auto_items:
-            print("[!] Upozorenje: Postoje stavke sa statusom auto. Sistem je u Monitor režimu.")
-            sys.exit(3)
-        sys.exit(0)
+            if stale:
+                print(f"[!] Upozorenje: {len(stale)} odluka je zastarelo (fajl promenjen) i vraceno na auto. Vidi REPORT.md.")
+            if missing:
+                print(f"[!] Upozorenje: {len(missing)} odluka se odnosi na rute kojih vise nema.")
+            if has_auto_items:
+                print(f"[!] Postoje stavke sa statusom auto (samo signal). Rezim: {decisions.get('mode', 'monitor')}.")
+                sys.exit(3)
+            sys.exit(0)
 
-    except Exception as e:
-        # Sigurnosna provera: nikada ne brisi aktivni symlink target u except bloku (Tačka 1)
-        active_target = os.path.realpath(output_path) if os.path.islink(output_path) else ""
-        if 'temp_output_path' in locals() and os.path.exists(temp_output_path) and temp_output_path != active_target:
-            shutil.rmtree(temp_output_path, ignore_errors=True)
-        print(f"[-] Kritična greška: {e}")
-        sys.exit(1)
+        except Exception as e:
+            active_target = os.path.realpath(output_path) if os.path.islink(output_path) else ""
+            if 'temp_output_path' in locals() and os.path.exists(temp_output_path) and temp_output_path != active_target:
+                shutil.rmtree(temp_output_path, ignore_errors=True)
+            print(f"[-] Kritična greška: {e}")
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()
