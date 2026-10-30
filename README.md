@@ -59,6 +59,23 @@ Requires **PHP 7.0+** on the server (the gate uses `??` and an immediately invok
 
 ---
 
+## Related work: October CMS
+
+While developing the idea, the author found that October CMS already ships something similar: its `.htaccess` allows direct access only to whitelisted directories and sends everything else to `index.php`. That confirms the direction, but it is a different layer:
+
+| | October CMS `.htaccess` | ACESHRUG |
+|---|---|---|
+| What it checks | the URL path (which directory may be reached) | the file that actually executes, its hash, methods and parameters |
+| Modified `index.php` or plugin | not noticed | `file_tampered` / blocked |
+| Webshell dropped into an allowed directory | depends on the rule for that directory | unregistered route, SHRUG |
+| Who can change it | `.htaccess` is itself a file in the webroot: anyone with write access can override it | `php_admin_value` in the Apache configuration, out of the application's reach |
+| Signal | none, just a 404 | every attempt is logged |
+| Applies to | October CMS only | any PHP application, including ones with no such rules |
+
+In short: `.htaccess` says which paths exist; ACESHRUG says what may execute and whether it is still the same code. The two can be used together.
+
+---
+
 ## Quick start (monitor mode, Apache + mod_php)
 
 ```bash

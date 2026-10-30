@@ -61,6 +61,23 @@ Na serveru je potreban **PHP 7.0+** (gate koristi `??` i odmah pozvanu closure f
 
 ---
 
+## Srodna rešenja: October CMS
+
+Tokom razvoja ideje autor je došao do zaključka da October CMS već ima slično rešenje: njegov `.htaccess` dozvoljava direktan pristup samo određenim direktorijumima, a sve ostalo šalje na `index.php`. To potvrđuje pravac, ali je u pitanju drugi sloj:
+
+| | October CMS `.htaccess` | ACESHRUG |
+|---|---|---|
+| Šta proverava | URL putanju (koji direktorijum sme) | fajl koji se stvarno izvršava, njegov hash, metode i parametre |
+| Izmenjen `index.php` ili plugin | ne primećuje | `file_tampered` / blokada |
+| Webshell ubačen u dozvoljeni direktorijum | zavisi od pravila za taj direktorijum | neregistrovana ruta, SHRUG |
+| Ko može da ga promeni | sam `.htaccess` je fajl u webroot-u: ko ima upis, može da ga pregazi | `php_admin_value` u Apache konfiguraciji, van domašaja aplikacije |
+| Signal | nema, samo 404 | svaki pokušaj u logu |
+| Važi za | samo October CMS | bilo koju PHP aplikaciju, i onu bez ikakvih sličnih pravila |
+
+Ukratko: `.htaccess` kaže koje putanje postoje, a ACESHRUG kaže šta sme da se izvrši i da li je to i dalje isti kod. Mogu se koristiti zajedno.
+
+---
+
 ## Brzi početak (monitor režim, Apache + mod_php)
 
 ```bash
