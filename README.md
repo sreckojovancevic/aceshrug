@@ -4,100 +4,126 @@
 
 > The application declares what it does. The runtime locks it to that declaration. Everything else gets a shrug.
 
-*Aplikacija deklariše šta radi. Runtime je zaključava na tu deklaraciju. Na sve ostalo aplikacija samo slegne ramenima.*
+[Srpski / Serbian](README.sr.md)
 
-Status: **v0.2.16, eksperimentalno.** Monitor režim je proveren na produkcionoj PHP aplikaciji (Apache + mod_php, PHP 8.3). Enforcement režim još nije za produkciju.
+Status: **v0.2.16, experimental.** Monitor mode has been tested on a production PHP application (Apache + mod_php, PHP 8.3). Enforcement mode is not production-ready yet.
 
 ---
 
-## Ideja
+## The idea
 
-| Deo | Značenje | Šta ograničava |
+| Part | Meaning | What it limits |
 |---|---|---|
-| **ACE** | Aplikacija unapred deklariše svoj svet: rute, metode, parametre, fajlove. Runtime je zaključan na tu deklaraciju. | šta napadač može da **uradi** |
-| **SHRUG** | Sve van deklaracije dobija isti nulti odgovor: bez greške, bez razlike 403/404/500, bez informacije. | šta napadač može da **sazna** |
-| **SHRUG signal** | Spolja tišina, iznutra svest. Svaki pokušaj van ugovora se beleži. Legitiman klijent nikad ne izlazi van ugovora, pa je to tripwire skoro bez lažnih uzbuna. | ništa ne ostaje neviđeno |
+| **ACE** | The application declares its world up front: routes, methods, parameters, files. The runtime is locked to that declaration. | what an attacker can **do** |
+| **SHRUG** | Anything outside the declaration gets the same null response: no error, no 403/404/500 distinction, no information. | what an attacker can **learn** |
+| **SHRUG signal** | Silent outside, fully aware inside. Every attempt outside the contract is recorded. A legitimate client never steps outside the contract, so this is a tripwire with almost no false positives. | nothing goes unseen |
 
-ACESHRUG je strategija, a ne vezan alat: ne zavisi od jezika, veličine aplikacije ni protokola. Ova implementacija je za PHP.
+ACESHRUG is a strategy, not a single tool: it does not depend on the language, the size of the application, or the protocol. This implementation targets PHP.
 
-Ceo koncept, sa radnim tokom: [docs/ACESHRUG-workflow.md](docs/ACESHRUG-workflow.md).
+The full concept and workflow are in [docs/ACESHRUG-workflow.md](docs/ACESHRUG-workflow.md) (Serbian).
 
 ---
 
-## Kako radi
+## How it works
 
 ```
-            ┌───────────────── /etc/aceshrug/<app>/ ──────────────────┐
- HTTP ───▶  │ gate.php  ◀── manifest.php (ugovor: rute, šeme, hash-evi) │
- zahtev     └─────┬───────────────────────────────────────────────────┘
-                  │ auto_prepend_file (php_admin_value, ne može se pregaziti)
+            ┌──────────────────── /etc/aceshrug/<app>/ ─────────────────────┐
+ HTTP ───▶  │ gate.php ◀── manifest.php (contract: routes, schemas, hashes) │
+ request    └─────┬─────────────────────────────────────────────────────────┘
+                  │ auto_prepend_file (php_admin_value, cannot be overridden)
                   ▼
-            /var/www/html/<app>/  ◀── kod aplikacije, NETAKNUT
+            /var/www/html/<app>/  ◀── application code, UNTOUCHED
 ```
 
-1. **Builder** (`builder/aceshrug_build.py`) analizira aplikaciju i generiše `gate.php`, `manifest.php`, `pool.conf` i `REPORT.md` u direktorijum **van webroot-a**.
-2. Gate se uključuje preko `auto_prepend_file`. **Kod aplikacije se ne menja.**
-3. Gate pre svakog zahteva proverava rutu, SAPI, metodu, hash ulaznog fajla, integritet include-ova i šemu parametara.
-4. **Monitor** režim samo beleži. **Enforcement** blokira, i to samo stavke koje je čovek potvrdio (`status: confirmed`).
+1. The **builder** (`builder/aceshrug_build.py`) analyzes the application and generates `gate.php`, `manifest.php`, `pool.conf` and `REPORT.md` in a directory **outside the webroot**.
+2. The gate is enabled through `auto_prepend_file`. **Application code is never modified.**
+3. Before every request the gate checks the route, SAPI, method, entry-file hash, include integrity and parameter schema.
+4. **Monitor** mode only records. **Enforcement** blocks, and only for items a human has confirmed (`status: confirmed`).
 
 ---
 
-## Brzi početak (monitor režim, Apache + mod_php)
+## What it does and does not protect against
+
+**In enforcement mode, ACESHRUG prevents:**
+- direct execution of PHP files that are not declared in the manifest (for example an uploaded webshell);
+- execution of declared files modified after the build;
+- requests whose method or parameters fall outside the declared schema, for confirmed routes and parameters.
+
+**It does not prevent:**
+- code execution through a vulnerability in a legitimate route (local file inclusion, `unserialize`, `eval` in application code);
+- vulnerabilities in the PHP engine itself, such as php2shell (CVE-2026-109618 / CVE-2026-109619), because they trigger while PHP parses the request, before the gate is loaded. The only protection there is an up-to-date PHP.
+
+Requires **PHP 7.0+** on the server (the current gate uses `??` and an immediately invoked closure).
+
+---
+
+## Quick start (monitor mode, Apache + mod_php)
 
 ```bash
-# 1. build van webroot-a
+# 1. build outside the webroot
 sudo mkdir -p /etc/aceshrug && sudo chmod 755 /etc/aceshrug
 sudo python3 builder/aceshrug_build.py \
     --input  /var/www/html/app \
     --output /etc/aceshrug/app \
     --php-user www-data --php-group www-data
-# izlazni kod 3 = aktivirano u monitor režimu (sve stavke su "auto")
+# exit code 3 = activated in monitor mode (all items are "auto")
 
-# 2. log
+# 2. log directory
 sudo mkdir -p /var/log/aceshrug && sudo chown www-data:www-data /var/log/aceshrug
 
-# 3. Apache: vidi examples/apache/aceshrug-app.conf
+# 3. Apache: see examples/apache/aceshrug-app.conf
 sudo cp examples/apache/aceshrug-app.conf /etc/apache2/conf-available/
 sudo a2enconf aceshrug-app && sudo apache2ctl configtest && sudo systemctl reload apache2
 
-# isključivanje u svakom trenutku
+# disable at any time
 sudo a2disconf aceshrug-app && sudo systemctl reload apache2
 ```
 
-Detaljno uputstvo, sa tumačenjem signala i prelaskom na enforcement: [docs/BUILDER-UPUTSTVO.md](docs/BUILDER-UPUTSTVO.md).
+Detailed guide, including how to read signals and switch to enforcement: [docs/BUILDER-UPUTSTVO.md](docs/BUILDER-UPUTSTVO.md) (Serbian).
 
-> **Poznat problem u v0.2.16:** smoke fixture čita `$_ENV`, koji je prazan uz podrazumevani `variables_order=GPCS`, pa build pada na testu statusa. Privremeno rešenje: u `run_smoke_test` zameniti `isset($_ENV['SIM_GET'])` / `$_ENV['SIM_GET']` sa `getenv('SIM_GET')!==false` / `getenv('SIM_GET')`, i isto za `SIM_POST`. Vidi [CHANGELOG.md](CHANGELOG.md).
+> **Known issue in v0.2.16:** the smoke-test fixture reads `$_ENV`, which is empty with the default `variables_order=GPCS`, so the build fails at the status test. Workaround: in `run_smoke_test`, replace `isset($_ENV['SIM_GET'])` / `$_ENV['SIM_GET']` with `getenv('SIM_GET')!==false` / `getenv('SIM_GET')`, and the same for `SIM_POST`. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
-## Sadržaj repozitorijuma
+## Repository contents
 
-| Putanja | Šta je |
+| Path | What it is |
 |---|---|
-| `builder/aceshrug_build.py` | builder: analiza, generisanje, smoke test, aktivacija preko symlink-a, rollback |
-| `tools/aceshrug_gen.py` | analizator manifesta zasnovan na parseru (tree-sitter-php): include graf, dostižne funkcije, `filter_input`, HTML nagoveštaji šeme, SQL → column-level GRANT |
-| `docs/ACESHRUG-workflow.md` | koncept, arhitektura, radni tok |
-| `docs/BUILDER-UPUTSTVO.md` | uputstvo za builder |
-| `docs/ROADMAP.md` | zahtevi sa terena i plan sledećih verzija |
-| `examples/` | Apache i logrotate konfiguracija |
-| `tests/fixtures/` | namerno loš PHP za proveru blokera |
+| `builder/aceshrug_build.py` | builder: analysis, generation, smoke test, activation via symlink, rollback |
+| `tools/aceshrug_gen.py` | parser-based manifest analyzer (tree-sitter-php): include graph, reachable functions, `filter_input`, schema hints from HTML forms, SQL → column-level GRANT |
+| `docs/ACESHRUG-workflow.md` | concept, architecture, workflow |
+| `docs/BUILDER-UPUTSTVO.md` | builder guide |
+| `docs/ROADMAP.md` | field requirements and plan for next versions |
+| `examples/` | Apache and logrotate configuration |
+| `tests/fixtures/` | deliberately bad PHP for blocker checks |
 
 ---
 
-## Zahtevi
+## Requirements
 
-- Python 3.8+ (builder), PHP CLI iste verzije kao na serveru
-- PHP 7.4+ na serveru
-- root, za vlasništvo `root:<php-group>` i proveru čitljivosti preko `sudo -u <php-user>`
+- Python 3.8+ (builder), PHP CLI of the same version as the server
+- PHP 7.0+ on the server
+- root, for `root:<php-group>` ownership and the read check via `sudo -u <php-user>`
 - `tools/aceshrug_gen.py`: `pip install tree-sitter tree-sitter-php pyyaml`
+
+---
+
+## License
+
+**GPL-3.0-or-later**, with the [ACESHRUG Generated Output Exception](LICENSE-EXCEPTION.md).
+
+- ACESHRUG itself (builder, tools, documentation) is under the GNU General Public License v3 or later. Modified versions that are distributed must remain open.
+- **Generated output** (`gate.php`, `manifest.php`, generated configuration) may be used with any application, under any license. Using ACESHRUG does not make your application GPL.
+
+See [LICENSE](LICENSE) and [LICENSE-EXCEPTION.md](LICENSE-EXCEPTION.md).
 
 ---
 
 ## Authors
 
-- **Srećko Jovančević**: ideja i koncept ACESHRUG (ime, SHRUG princip, strategija), testiranje rešenja na terenu ([github.com/sreckojovancevic](https://github.com/sreckojovancevic))
+- **Srećko Jovančević**: idea and concept of ACESHRUG (name, SHRUG principle, strategy), field testing of the solution ([github.com/sreckojovancevic](https://github.com/sreckojovancevic))
 
 ## Acknowledgments
 
-- **Gemini (Google)**: osnova koda builder-a i gatekeeper-a
-- **Claude (Anthropic)**: elaboracija koncepta i arhitekture, pregled i testiranje koda (smoke matrica, testovi sa namerno pokvarenim gate-om), `tools/aceshrug_gen.py`, dokumentacija
+- **Gemini (Google)**: base code of the builder and the gatekeeper
+- **Claude (Anthropic)**: elaboration of the concept and architecture, code review and testing (smoke matrix, tests with deliberately broken gates), `tools/aceshrug_gen.py`, documentation
