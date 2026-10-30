@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+# generisani izlazi buildera i lokalni manifesti ne idu u repo
+*.d/
+manifest.php
+manifest.php.bak
+REPORT.md
+out/
+manifesti/
+*.log
