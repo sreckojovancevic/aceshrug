@@ -17,10 +17,10 @@ import http.client
 import fcntl
 from datetime import datetime, timezone
 
-# --- GATEKEEPER STUB (v0.3.6 - Enterprise Hardened RASP) ---
+# --- GATEKEEPER STUB (v0.3.7 - Enterprise Hardened RASP) ---
 GATE_PHP_STUB = """<?php
 /**
- * ACESHRUG Gatekeeper v0.3.6 (Enterprise Hardened Runtime)
+ * ACESHRUG Gatekeeper v0.3.7 (Enterprise Hardened Runtime)
  * Učitava se preko auto_prepend_file. Koristi keširani manifest.php.
  */
 if (defined('ACESHRUG_GATE')) {
@@ -764,10 +764,40 @@ def export_decisions(active_manifest_path, decisions_path):
     return len(out["routes"])
 
 
+ROUNDTRIP_CASES = [
+    "plain", "a'b", "a\\b", "^\\d+$", "\\\\", "trailing\\", "a\\'b", "/^[a-z\\\\']+$/",
+    "a\nb", "a\x00b", "čćž/фајл.php", "ruta'x.php", "push/CO/config.php", "",
+]
+
+
+def check_serializer_roundtrip(work_dir):
+    """Python -> manifest (PHP) -> PHP -> JSON -> Python mora vratiti iste vrednosti i kljuceve."""
+    data = {"c": ROUNDTRIP_CASES, "k": {c: i for i, c in enumerate(ROUNDTRIP_CASES)}}
+    test_file = os.path.join(work_dir, "roundtrip_test.php")
+    with open(test_file, "w", encoding="utf-8") as f:
+        f.write("<?php\nreturn " + python_to_php_array(data) + ";\n")
+    res = subprocess.run(['php', '-r', 'echo json_encode(require $argv[1]);', test_file],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if res.returncode != 0:
+        print(f"[-] Smoke test fail: round-trip serijalizacije, PHP greška: {res.stderr.decode(errors='replace').strip()[:300]}")
+        return False
+    try:
+        out = json.loads(res.stdout.decode("utf-8"))
+    except Exception as e:
+        print(f"[-] Smoke test fail: round-trip serijalizacije, neispravan izlaz: {e}")
+        return False
+    if not isinstance(out, dict) or out.get("c") != data["c"] or out.get("k") != data["k"]:
+        print(f"[-] Smoke test fail: round-trip serijalizacije je pokvario podatke: {out!r}"[:500])
+        return False
+    return True
+
+
 def run_smoke_test(temp_output_path):
-    """Proširena smoke matrica (v0.3.6) sa sentinel testom i proverom statusa."""
+    """Proširena smoke matrica (v0.3.7) sa sentinel testom i proverom statusa."""
     test_dir = tempfile.mkdtemp(prefix="aceshrug_smoke_")
     try:
+        if not check_serializer_roundtrip(test_dir):
+            return False
         app_dir = os.path.join(test_dir, "app")
         ace_dir = os.path.join(test_dir, "ace")
         os.makedirs(app_dir)
@@ -804,7 +834,7 @@ def run_smoke_test(temp_output_path):
             else:
                 manifest_data = {
                     "format_version": 2,
-                    "engine_version": "0.3.6",
+                    "engine_version": "0.3.7",
                     "application_id": "smoke_test",
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "mode": mode,
@@ -915,7 +945,7 @@ def run_smoke_test(temp_output_path):
         tamper_hash = hashlib.sha256(b"<?php echo 'BODY-OK';").hexdigest() # Mismatch sa manifestom
 
         bad_route_manifest = {
-            "format_version": 2, "engine_version": "0.3.6", "application_id": "smoke_test",
+            "format_version": 2, "engine_version": "0.3.7", "application_id": "smoke_test",
             "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
             "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
             "routes": {"tamper_test.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "cli", "methods": ["GET"], "sha256": tamper_hash, "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
@@ -925,7 +955,7 @@ def run_smoke_test(temp_output_path):
 
         # Scenario 6: include_tampered
         bad_manifest = {
-            "format_version": 2, "engine_version": "0.3.6", "application_id": "smoke_test",
+            "format_version": 2, "engine_version": "0.3.7", "application_id": "smoke_test",
             "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
             "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
             "routes": {"probe.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "cli", "methods": ["GET"], "sha256": probe_hash, "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
@@ -1010,7 +1040,7 @@ def run_http_smoke(temp_output_path):
         with open(os.path.join(app_dir, "probe.php"), "wb") as f: f.write(probe)
         with open(os.path.join(app_dir, "other.php"), "wb") as f: f.write(b"<?php echo 'OTHER';")
         shutil.copy(os.path.join(temp_output_path, "gate.php"), os.path.join(ace_dir, "gate.php"))
-        man = {"format_version": 2, "engine_version": "0.3.6", "application_id": "http_smoke",
+        man = {"format_version": 2, "engine_version": "0.3.7", "application_id": "http_smoke",
                "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
                "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
                "ignore_cookie_prefixes": [], "log_file": None,
@@ -1065,7 +1095,7 @@ def run_http_smoke(temp_output_path):
         shutil.rmtree(test_dir, ignore_errors=True)
 
 def main():
-    parser = argparse.ArgumentParser(description="ACESHRUG Universal Builder v0.3.6")
+    parser = argparse.ArgumentParser(description="ACESHRUG Universal Builder v0.3.7")
     parser.add_argument("--input", help="Ulazni direktorijum aplikacije (read-only)")
     parser.add_argument("--output", required=True, help="Izlazni ACESHRUG direktorijum (symlink baza)")
     parser.add_argument("--php-user", default="www-data", help="Sistemski korisnik za pool.conf")
@@ -1272,7 +1302,7 @@ def main():
 
             report_path = os.path.join(temp_output_path, "REPORT.md")
             with open(report_path, "w", encoding="utf-8") as rep:
-                rep.write("# ACESHRUG Universal Analysis Report (v0.3.6)\n\n")
+                rep.write("# ACESHRUG Universal Analysis Report (v0.3.7)\n\n")
                 rep.write(f"- **Scan Date:** {datetime.now(timezone.utc).isoformat()}\n")
                 rep.write(f"- **Ukupno PHP fajlova:** {len(all_files)}\n")
                 rep.write(f"- **Entrypoint ruta:** {len(routes)}\n")
@@ -1320,7 +1350,7 @@ def main():
 
             manifest_data = {
                 "format_version": 2,
-                "engine_version": "0.3.6",
+                "engine_version": "0.3.7",
                 "application_id": os.path.basename(input_path),
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "mode": decisions.get("mode", "monitor"),
@@ -1419,7 +1449,7 @@ php_admin_flag[expose_php] = Off
                     if old_v != active_target and os.path.exists(os.path.join(old_v, ".aceshrug-generated")):
                         shutil.rmtree(old_v)
 
-            print(f"[✔] ACESHRUG v0.3.6 uspešno generisan i aktiviran preko symlink-a: {output_path}")
+            print(f"[✔] ACESHRUG v0.3.7 uspešno generisan i aktiviran preko symlink-a: {output_path}")
 
             if decisions_dirty:
                 save_decisions(decisions, decisions_path)

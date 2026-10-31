@@ -1,4 +1,4 @@
-# ACESHRUG builder: uputstvo (v0.3.6)
+# ACESHRUG builder: uputstvo (v0.3.7)
 
 Builder analizira PHP aplikaciju i u direktorijumu **van webroot-a** pravi gatekeeper (`gate.php`), ugovor (`manifest.php`), šablon php-fpm pool-a (`pool.conf`) i izveštaj (`REPORT.md`). **Kod aplikacije ostaje netaknut**: gate se uključuje preko `auto_prepend_file`.
 
@@ -275,6 +275,8 @@ Pre aktivacije builder pravi izolovanu probnu aplikaciju i pokreće stvarni `gat
 | 20 | loš session ID (monitor / enforcement) | `session_cookie_invalid` / blokada |
 | 21 | događaj | sadrži `"route":"probe.php"` |
 | 22 | `--log-file` | događaj u log fajlu, ne u `error_log` |
+
+**Round-trip serijalizatora** (od v0.3.7): pre matrice, vrednosti i ključevi sa `'`, `\`, završnim `\`, novim redom, NUL bajtom i UTF-8 prolaze put Python → `manifest.php` → PHP → JSON i moraju se vratiti nepromenjeni. Isto radi i `python3 tests/test_php_escape.py`.
 
 **HTTP smoke** (od v0.3.6, ugrađeni `php -S`, enforcement, potvrđena ruta sa `GET`):
 

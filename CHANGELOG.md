@@ -2,7 +2,12 @@
 
 Verzije builder-a (`builder/aceshrug_build.py`). Svaka verzija je pregledana i pokrenuta. Od v0.2.11 nadalje provera uključuje i testove sa namerno pokvarenim gate-om, koji proveravaju da smoke test zaista hvata kvar.
 
-## v0.3.6 (trenutna)
+## v0.3.7 (trenutna)
+- **Round-trip test serijalizatora u smoke testu:** vrednosti i ključevi idu Python → `manifest.php` → PHP → JSON → Python i moraju se vratiti nepromenjeni (`'`, `\`, završni `\`, novi red, NUL, UTF-8, prazan string). Ideja i prva verzija testa: Srećko Jovančević. Test radi u privremenom direktorijumu smoke testa, pa ne ostaje u aktivnoj verziji; putanja se PHP-u predaje kao argument.
+- `tests/test_php_escape.py`: isti test kao samostalan regresioni test.
+- Provereno sa 4 namerno pokvarena serijalizatora (bez udvajanja `\`, bez escape-a `'`, ključevi bez escape-a, dvostruko udvajanje koje daje ispravan PHP sa pogrešnim podacima): svi odbijeni.
+
+## v0.3.6
 Na osnovu prvog dana monitor režima na terenu (458 signala, uključujući stvarne napade sa interneta).
 - **Kolačići:** sesijski kolačić (`session.name`) je uvek poznat, uz proveru oblika ID-a (`session_cookie_invalid`). Kolačići za praćenje (`_ga`, `_gid`, `_gat`, `_gcl`, `_fbp`) se tiho ignorišu po prefiksu; lista se menja preko `ignore_cookie_prefixes` u decisions fajlu. Na terenu su ovi kolačići bili 84% signala.
 - **`HEAD` = `GET`:** `HEAD` je dozvoljen gde god je dozvoljen `GET`. Ranije bi enforcement blokirao monitoring.

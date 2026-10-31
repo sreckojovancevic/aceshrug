@@ -6,7 +6,7 @@
 
 [Srpski / Serbian](README.sr.md)
 
-Status: **v0.3.6, experimental.** Monitor mode has been tested on a production PHP application (Apache + mod_php, PHP 8.3). Enforcement mode is not production-ready yet.
+Status: **v0.3.7, experimental.** Monitor mode has been tested on a production PHP application (Apache + mod_php, PHP 8.3). Enforcement mode is not production-ready yet.
 
 ---
 
@@ -136,6 +136,7 @@ After every deploy of the application, rebuild with `--reload apache` (or `--rel
 | `docs/ROADMAP.md` | field requirements and plan for next versions |
 | `examples/` | Apache and logrotate configuration |
 | `tests/fixtures/` | deliberately bad PHP for blocker checks |
+| `tests/test_php_escape.py` | round-trip test of the manifest serializer (`python3 tests/test_php_escape.py`) |
 
 ---
 

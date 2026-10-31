@@ -8,7 +8,7 @@
 
 [English](README.md)
 
-Status: **v0.3.6, eksperimentalno.** Monitor režim je proveren na produkcionoj PHP aplikaciji (Apache + mod_php, PHP 8.3). Enforcement režim još nije za produkciju.
+Status: **v0.3.7, eksperimentalno.** Monitor režim je proveren na produkcionoj PHP aplikaciji (Apache + mod_php, PHP 8.3). Enforcement režim još nije za produkciju.
 
 ---
 
@@ -138,6 +138,7 @@ Posle svakog deploy-a aplikacije ponovi build sa `--reload apache` (ili `--reloa
 | `docs/ROADMAP.md` | zahtevi sa terena i plan sledećih verzija |
 | `examples/` | Apache i logrotate konfiguracija |
 | `tests/fixtures/` | namerno loš PHP za proveru blokera |
+| `tests/test_php_escape.py` | round-trip test serijalizatora manifesta (`python3 tests/test_php_escape.py`) |
 
 ---
 
