@@ -18,7 +18,7 @@ Status: **v0.3.7, eksperimentalno.** Monitor režim je proveren na produkcionoj 
 |---|---|---|
 | **ACE** | Aplikacija unapred deklariše svoj svet: rute, metode, parametre, fajlove. Runtime je zaključan na tu deklaraciju. | šta napadač može da **uradi** |
 | **SHRUG** | Sve van deklaracije dobija isti nulti odgovor: bez greške, bez razlike 403/404/500, bez informacije. | šta napadač može da **sazna** |
-| **SHRUG signal** | Spolja tišina, iznutra svest. Svaki pokušaj van ugovora se beleži. Legitiman klijent nikad ne izlazi van ugovora, pa je to tripwire skoro bez lažnih uzbuna. | ništa ne ostaje neviđeno |
+| **SHRUG signal** | **Spolja tišina, unutra glasnost.** Svaki pokušaj van ugovora se beleži. Legitiman klijent nikad ne izlazi van ugovora, pa je to tripwire skoro bez lažnih uzbuna. | ništa ne ostaje neviđeno |
 
 ACESHRUG je strategija, a ne vezan alat: ne zavisi od jezika, veličine aplikacije ni protokola. Ova implementacija je za PHP.
 

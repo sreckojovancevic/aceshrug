@@ -16,7 +16,7 @@ Status: **v0.3.7, experimental.** Monitor mode has been tested on a production P
 |---|---|---|
 | **ACE** | The application declares its world up front: routes, methods, parameters, files. The runtime is locked to that declaration. | what an attacker can **do** |
 | **SHRUG** | Anything outside the declaration gets the same null response: no error, no 403/404/500 distinction, no information. | what an attacker can **learn** |
-| **SHRUG signal** | Silent outside, fully aware inside. Every attempt outside the contract is recorded. A legitimate client never steps outside the contract, so this is a tripwire with almost no false positives. | nothing goes unseen |
+| **SHRUG signal** | **Silent outside, loud inside.** Every attempt outside the contract is recorded. A legitimate client never steps outside the contract, so this is a tripwire with almost no false positives. | nothing goes unseen |
 
 ACESHRUG is a strategy, not a single tool: it does not depend on the language, the size of the application, or the protocol. This implementation targets PHP.
 

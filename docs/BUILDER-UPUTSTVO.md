@@ -112,23 +112,7 @@ U monitor režimu `fatal_block` mora biti **0**.
 
 **Ako sajt vrati prazan 404 u monitor režimu**, odmah isključi konfiguraciju i pogledaj poslednji događaj u logu. U monitor režimu blokira samo neispravan manifest ili konfiguracija (`manifest_*`, `fatal_block`).
 
-Česta pojava je `include_missing_or_outside`: builder (root) je video fajl koji PHP korisnik ne može da pročita, najčešće direktorijum sa pravima `000` (namerno isključen modul). Od v0.3.0 to je u monitor režimu samo signal, ali u enforcement režimu blokira, pa takve stavke treba izbaciti. Privremeno rešenje, dok builder ne dobije proveru prava (vidi ROADMAP):
-
-```bash
-# 1. spisak stavki koje PHP korisnik ne vidi
-sudo -u www-data php -r '
-$m = require "/etc/aceshrug/app/manifest.php"; $r = $m["app_root"];
-foreach (["includes","routes"] as $s) foreach ($m[$s] as $k => $v)
-  if (!is_readable("$r/$k")) echo "$s\t$k\n";' > /tmp/ace_unreadable.txt
-
-# 2. uklanjanje iz manifesta (original ostaje kao .bak)
-M=$(readlink -f /etc/aceshrug/app)/manifest.php
-sudo cp -p "$M" "$M.bak"
-sudo php -r '$f=$argv[1]; $m=require $f;
-foreach (file("/tmp/ace_unreadable.txt", FILE_IGNORE_NEW_LINES) as $l) { [$s,$k]=explode("\t",$l); unset($m[$s][$k]); }
-file_put_contents($f, "<?php\nreturn ".var_export($m,true).";\n");' "$M"
-sudo chown root:www-data "$M" && sudo chmod 640 "$M" && sudo -u www-data php -l "$M"
-```
+Česta pojava bila je `include_missing_or_outside`: builder (root) vidi fajl koji PHP korisnik ne može da pročita, najčešće direktorijum sa pravima `000` (namerno isključen modul). Od v0.3.5 builder takve fajlove sam preskače (provera kao `--php-user`) i navodi ih u REPORT-u pod "Preskočeno", pa ručna izmena manifesta više nije potrebna.
 
 ---
 

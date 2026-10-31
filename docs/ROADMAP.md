@@ -17,12 +17,6 @@ Prva proba u monitor režimu na produkcionoj PHP aplikaciji (~1.300 PHP fajlova,
 
 ## Nove funkcije
 
-### Provera prava pre generisanja
-Pre analize builder prolazi kroz ulazni direktorijum i za svaki poddirektorijum proverava da li `--php-user` može da uđe u njega:
-- direktorijum sa pravima `000`, ili bez prava `x`, tretira se kao **namerno isključen**, a sve ispod njega se izostavlja iz manifesta;
-- REPORT dobija sekciju "Isključeni direktorijumi" (putanja, prava, broj preskočenih fajlova);
-- čitljiv fajl koji uključuje nešto iz isključenog direktorijuma daje upozorenje, jer je kod verovatno mrtav.
-
 ### Interaktivni čarobnjak (`--wizard`, ili pokretanje bez argumenata)
 1. Putanja do aplikacije.
 2. Lokacija ACESHRUG-a: podrazumevano `/etc/aceshrug/<app>`, ili po izboru. Proverava se da nije u webroot-u niti u ulazu.
@@ -32,15 +26,3 @@ Pre analize builder prolazi kroz ulazni direktorijum i za svaki poddirektorijum 
 6. Rezime: šta je urađeno, kako se isključuje, gde je REPORT.
 
 Neinteraktivni režim ostaje za CI: svako pitanje ima i odgovarajuću opciju (`--output`, `--setup-apache`, `--setup-log`, `--yes`).
-
-## Kasnije
-
-- Integracija `tools/aceshrug_gen.py` u builder (parser umesto regex-a; `filter_input`, `__DIR__` include, parametri kroz include lanac).
-- Potvrđivanje parametara iz komandne linije (rute već imaju `--confirm`/`--reject` od v0.3.4).
-- Odvojiti "fajl sme biti uključen" od "fajl sme biti direktno pozvan" (sada je fajl ili ruta ili include, po heuristici), i graf zavisnosti po ruti.
-- HTTP smoke test (status, telo, zaglavlja, metode) uz postojeći CLI test.
-- `disable_functions` (allowlist) i `open_basedir` u generisanoj konfiguraciji.
-- Hash include-a van puta zahteva (cron ili reload), umesto na svakom zahtevu.
-- SHRUG sa izjednačenim vremenom odgovora.
-- Signal ka kolektoru van mašine (UDP syslog).
-- Fini kavez po ruti: C ekstenzija sa Zend hookovima.
