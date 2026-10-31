@@ -12,7 +12,7 @@ Prva proba u monitor režimu na produkcionoj PHP aplikaciji (~1.300 PHP fajlova,
 | 4 | odbiti `--output` unutar webroot-a | REPORT i konfiguracija ne smeju biti dostupni preko URL-a |
 | 5 | delimično v0.3.5 (`--exclude` izbacuje stablo iz manifesta); ostaje `--vendor <dir>`: include-only, sa hash-om, bez skeniranja blokera i bez statusa rute | vendor kod je dao 15 lažnih blokera i ~1.200 "ruta" |
 | 6 | regex za `extract` ne sme da hvata `->extract(` ni `function extract(` | lažni nalazi u ZIP bibliotekama |
-| 7 | kolačići: politika `null` koja se sprovodi; sesijski kolačić automatski u šemi | `PHPSESSID` i `_ga*` daju signal na svakom zahtevu |
+| 7 | ✔ v0.3.6 (sesijski kolačić, ignorisani prefiksi): kolačići: politika `null` koja se sprovodi; sesijski kolačić automatski u šemi | `PHPSESSID` i `_ga*` daju signal na svakom zahtevu |
 | 8 | kreiranje direktorijuma verzije unutar `try`, sa urednom porukom | traceback pri koliziji imena |
 
 ## Nove funkcije

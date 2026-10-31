@@ -11,13 +11,16 @@ import pwd
 import grp
 import subprocess
 import uuid
+import socket
+import time
+import http.client
 import fcntl
 from datetime import datetime, timezone
 
-# --- GATEKEEPER STUB (v0.3.5 - Enterprise Hardened RASP) ---
+# --- GATEKEEPER STUB (v0.3.6 - Enterprise Hardened RASP) ---
 GATE_PHP_STUB = """<?php
 /**
- * ACESHRUG Gatekeeper v0.3.5 (Enterprise Hardened Runtime)
+ * ACESHRUG Gatekeeper v0.3.6 (Enterprise Hardened Runtime)
  * Učitava se preko auto_prepend_file. Koristi keširani manifest.php.
  */
 if (defined('ACESHRUG_GATE')) {
@@ -54,6 +57,21 @@ define('ACESHRUG_GATE', true);
             aceshrug_block();
         }
     }
+
+    $log_file = $manifest['log_file'] ?? null;
+    $ignore_prefixes = $manifest['ignore_cookie_prefixes'] ?? [];
+    if (($log_file !== null && (!is_string($log_file) || $log_file === '' || $log_file[0] !== '/')) || !is_array($ignore_prefixes)) {
+        aceshrug_event("manifest_structure_invalid", "Invalid log_file or ignore_cookie_prefixes", "fatal", "fatal_block");
+        aceshrug_block();
+    }
+    foreach ($ignore_prefixes as $ip_) {
+        if (!is_string($ip_) || $ip_ === '') {
+            aceshrug_event("manifest_structure_invalid", "Invalid ignore_cookie_prefixes entry", "fatal", "fatal_block");
+            aceshrug_block();
+        }
+    }
+    $GLOBALS['__aceshrug_ctx']['log_file'] = $log_file;
+    $GLOBALS['__aceshrug_ctx']['method'] = (PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg') ? 'CLI' : (string)($_SERVER['REQUEST_METHOD'] ?? 'GET');
     
     $app_root = realpath($manifest['app_root'] ?? '');
     $script_filename = realpath($_SERVER['SCRIPT_FILENAME'] ?? '');
@@ -75,6 +93,7 @@ define('ACESHRUG_GATE', true);
     
     $rel_path = ltrim(substr($script_filename, strlen($app_root)), DIRECTORY_SEPARATOR);
     $rel_path = str_replace(DIRECTORY_SEPARATOR, '/', $rel_path);
+    $GLOBALS['__aceshrug_ctx']['route'] = $rel_path;
     
     foreach ($manifest['includes'] as $inc_path => $inc_meta) {
         if (!is_string($inc_path) || trim($inc_path) === '' || strpos($inc_path, '..') !== false) {
@@ -149,7 +168,8 @@ define('ACESHRUG_GATE', true);
             aceshrug_event("manifest_structure_invalid", "Invalid methods array", "fatal", "fatal_block");
             aceshrug_block();
         }
-        if (!in_array($method, $methods, true)) {
+        $method_ok = in_array($method, $methods, true) || ($method === 'HEAD' && in_array('GET', $methods, true));
+        if (!$method_ok) {
             $enforce_action = ($mode === 'enforcement' && $route_status === 'confirmed') ? 'blocked' : 'logged_allow';
             aceshrug_event("method_not_allowed", "$rel_path [$method]", "warning", $enforce_action);
             if ($mode === 'enforcement' && $route_status === 'confirmed') { aceshrug_block(); }
@@ -163,7 +183,7 @@ define('ACESHRUG_GATE', true);
         if ($mode === 'enforcement' && $route_status === 'confirmed') { aceshrug_block(); }
     }
     
-    aceshrug_validate_inputs($route_meta['params'] ?? [], $manifest['unknown_policy'] ?? [], $mode, $route_status);
+    aceshrug_validate_inputs($route_meta['params'] ?? [], $manifest['unknown_policy'] ?? [], $mode, $route_status, $ignore_prefixes);
     
 })();
 
@@ -182,7 +202,8 @@ function aceshrug_sync_request($key) {
     if ($found) { $_REQUEST[$key] = $value; } else { unset($_REQUEST[$key]); }
 }
 
-function aceshrug_validate_inputs($allowed_params, $policy, $mode, $route_status) {
+function aceshrug_validate_inputs($allowed_params, $policy, $mode, $route_status, $ignore_prefixes = []) {
+    $session_name = (string)ini_get('session.name');
     $sources = ['GET' => &$_GET, 'POST' => &$_POST, 'COOKIE' => &$_COOKIE];
     
     foreach ($sources as $src_name => &$data) {
@@ -193,6 +214,22 @@ function aceshrug_validate_inputs($allowed_params, $policy, $mode, $route_status
         }
         
         foreach ($data as $key => $val) {
+            if ($src_name === 'COOKIE' && !array_key_exists($key, $schema)) {
+                if ($session_name !== '' && (string)$key === $session_name) {
+                    // sesijski kolacic je uvek poznat; proverava se samo oblik ID-a
+                    if (!is_string($val) || !preg_match('/^[A-Za-z0-9,-]{1,256}$/', $val)) {
+                        $sb = ($mode === 'enforcement' && $route_status === 'confirmed');
+                        aceshrug_event("session_cookie_invalid", "COOKIE: $key", "warning", $sb ? 'blocked' : 'logged_allow');
+                        if ($sb) { aceshrug_block(); }
+                    }
+                    continue;
+                }
+                $ignored = false;
+                foreach ($ignore_prefixes as $pfx) {
+                    if (strpos((string)$key, $pfx) === 0) { $ignored = true; break; }
+                }
+                if ($ignored) { continue; }
+            }
             if (!array_key_exists($key, $schema)) {
                 $action_policy = $policy[$src_name] ?? 'allow_with_signal';
                 if ($action_policy === 'null') {
@@ -315,6 +352,8 @@ function aceshrug_event($reason, $detail, $severity, $action) {
         'severity' => $severity,
         'action' => $action,
         'ip' => $ip,
+        'route' => $GLOBALS['__aceshrug_ctx']['route'] ?? null,
+        'method' => $GLOBALS['__aceshrug_ctx']['method'] ?? null,
         'detail' => $safe_detail
     ];
 
@@ -323,7 +362,12 @@ function aceshrug_event($reason, $detail, $severity, $action) {
     if ($log_entry === false) {
         $log_entry = '{"component":"ACESHRUG","event":"log_encoding_failed"}';
     }
-    error_log("[ACESHRUG-EVENT] " . $log_entry);
+    $line = "[ACESHRUG-EVENT] " . $log_entry;
+    $lf = $GLOBALS['__aceshrug_ctx']['log_file'] ?? null;
+    if ($lf !== null && @error_log('[' . gmdate('d-M-Y H:i:s') . ' UTC] ' . $line . "\n", 3, $lf)) {
+        return;
+    }
+    error_log($line);
 }
 
 function aceshrug_block() {
@@ -517,6 +561,7 @@ def analyze_codebase(input_dir, prev_manifest=None, allowed_blockers=None, file_
     return routes, includes, php_files, blockers, findings, has_todos, has_auto_items
 
 VALID_STATUS = ("auto", "confirmed", "rejected")
+DEFAULT_IGNORE_COOKIES = ["_ga", "_gid", "_gat", "_gcl", "_fbp"]
 VALID_MODE = ("monitor", "enforcement")
 VALID_POLICY = ("allow_with_signal", "block", "null")
 VALID_TYPE = ("string", "int", "email", "array")
@@ -539,6 +584,9 @@ def load_decisions(path):
     for key in ("unknown_policy", "routes"):
         if key in d and not isinstance(d[key], dict):
             return None, [f"{key} mora biti JSON objekat"]
+    if "ignore_cookie_prefixes" in d and (not isinstance(d["ignore_cookie_prefixes"], list)
+            or not all(isinstance(x, str) and x for x in d["ignore_cookie_prefixes"])):
+        errs.append("ignore_cookie_prefixes mora biti lista nepraznih stringova")
     for src, pol in (d.get("unknown_policy") or {}).items():
         if pol not in VALID_POLICY:
             errs.append(f"unknown_policy.{src}: '{pol}' nije dozvoljeno")
@@ -717,7 +765,7 @@ def export_decisions(active_manifest_path, decisions_path):
 
 
 def run_smoke_test(temp_output_path):
-    """Proširena smoke matrica (v0.3.5) sa sentinel testom i proverom statusa."""
+    """Proširena smoke matrica (v0.3.6) sa sentinel testom i proverom statusa."""
     test_dir = tempfile.mkdtemp(prefix="aceshrug_smoke_")
     try:
         app_dir = os.path.join(test_dir, "app")
@@ -750,13 +798,13 @@ def run_smoke_test(temp_output_path):
         with open(fixture_prepend, "w") as f:
             f.write("<?php\nif(getenv('SIM_GET')!==false) { parse_str(getenv('SIM_GET'), $_GET); }\nif(getenv('SIM_POST')!==false) { parse_str(getenv('SIM_POST'), $_POST); }\nif(getenv('SIM_COOKIE')!==false) { parse_str(getenv('SIM_COOKIE'), $_COOKIE); }\n$_REQUEST = []; $o = ini_get('request_order') ?: 'GP'; foreach (str_split($o) as $c) { $_REQUEST = array_merge($_REQUEST, $c==='G' ? $_GET : ($c==='P' ? $_POST : ($c==='C' ? $_COOKIE : []))); }\nrequire_once '" + dst_gate + "';\n")
 
-        def execute_test(mode, script_path, expected_output, expected_code, expected_event=None, route_status="confirmed", param_schema=None, custom_manifest=None, sim_get="", expect_sentinel_artifact=None, policy=None, expect_sentinel_created=None, route_file="probe.php", sim_post="", sim_cookie="", php_ini=None):
+        def execute_test(mode, script_path, expected_output, expected_code, expected_event=None, route_status="confirmed", param_schema=None, custom_manifest=None, sim_get="", expect_sentinel_artifact=None, policy=None, expect_sentinel_created=None, route_file="probe.php", sim_post="", sim_cookie="", php_ini=None, extra=None, log_file=None, expect_no_event=None):
             if custom_manifest:
                 manifest_data = custom_manifest
             else:
                 manifest_data = {
                     "format_version": 2,
-                    "engine_version": "0.3.5",
+                    "engine_version": "0.3.6",
                     "application_id": "smoke_test",
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "mode": mode,
@@ -779,6 +827,12 @@ def run_smoke_test(temp_output_path):
                         }
                     }
                 }
+            if extra:
+                manifest_data = dict(manifest_data, **extra)
+            if log_file:
+                manifest_data = dict(manifest_data, log_file=log_file)
+                if os.path.exists(log_file):
+                    os.remove(log_file)
             manifest_content = "<?php\nreturn " + python_to_php_array(manifest_data) + ";\n"
             with open(os.path.join(ace_dir, "manifest.php"), "w") as f:
                 f.write(manifest_content)
@@ -808,6 +862,14 @@ def run_smoke_test(temp_output_path):
             if os.path.exists(events_log_path):
                 with open(events_log_path, "r", encoding="utf-8", errors="ignore") as lf:
                     log_content = lf.read()
+            if log_file:
+                if "[ACESHRUG-EVENT]" in log_content:
+                    print(f"[-] Smoke test fail: dogadjaj je otisao u error_log umesto u log_file: {log_content}")
+                    return False
+                log_content = open(log_file, encoding="utf-8", errors="ignore").read() if os.path.exists(log_file) else ""
+            if expect_no_event and expect_no_event in log_content:
+                print(f"[-] Smoke test fail [{mode}, {os.path.basename(script_path)}]: neocekivan dogadjaj '{expect_no_event}': {log_content}")
+                return False
             
             if res.returncode != expected_code:
                 print(f"[-] Smoke test fail [{mode}, {os.path.basename(script_path)}]: expected code {expected_code}, got {res.returncode}")
@@ -853,7 +915,7 @@ def run_smoke_test(temp_output_path):
         tamper_hash = hashlib.sha256(b"<?php echo 'BODY-OK';").hexdigest() # Mismatch sa manifestom
 
         bad_route_manifest = {
-            "format_version": 2, "engine_version": "0.3.5", "application_id": "smoke_test",
+            "format_version": 2, "engine_version": "0.3.6", "application_id": "smoke_test",
             "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
             "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
             "routes": {"tamper_test.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "cli", "methods": ["GET"], "sha256": tamper_hash, "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
@@ -863,7 +925,7 @@ def run_smoke_test(temp_output_path):
 
         # Scenario 6: include_tampered
         bad_manifest = {
-            "format_version": 2, "engine_version": "0.3.5", "application_id": "smoke_test",
+            "format_version": 2, "engine_version": "0.3.6", "application_id": "smoke_test",
             "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
             "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
             "routes": {"probe.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "cli", "methods": ["GET"], "sha256": probe_hash, "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
@@ -917,12 +979,93 @@ def run_smoke_test(temp_output_path):
         pol3 = {"GET": "null", "POST": "null", "COOKIE": "null"}
         if not execute_test("enforcement", req_script, "R=g P=p", 0, expected_event="unknown_parameter_dropped", param_schema=three_schema, policy=pol3, sim_get="x=g", sim_post="x=p", sim_cookie="x=c", php_ini=["request_order=PGC"], route_file="req.php"): return False
 
+        # kolacici: sesijski i ignorisani prefiksi su tihi, ostali daju signal, los session ID daje signal
+        ck = {"ignore_cookie_prefixes": ["_ga", "_gid"]}
+        if not execute_test("monitor", probe_path, "BODY-OK", 0, expected_event=None, sim_cookie="PHPSESSID=abc123def&_ga=GA1.1.1&_ga_XYZ=GS1", extra=ck): return False
+        if not execute_test("monitor", probe_path, "BODY-OK", 0, expected_event="unknown_parameter", sim_cookie="PHPSESSID=abc123&tracker=1", extra=ck, expect_no_event="PHPSESSID"): return False
+        if not execute_test("monitor", probe_path, "BODY-OK", 0, expected_event="session_cookie_invalid", sim_cookie="PHPSESSID=<script>", extra=ck): return False
+        if not execute_test("enforcement", probe_path, "", 1, expected_event="session_cookie_invalid", sim_cookie="PHPSESSID=../../etc", extra=ck): return False
+        if not execute_test("monitor", probe_path, "BODY-OK", 0, expected_event="unknown_parameter", sim_cookie="_ga=1", extra={"ignore_cookie_prefixes": []}): return False
+
+        # dogadjaj nosi rutu
+        if not execute_test("monitor", probe_path, "BODY-OK", 0, expected_event='"route":"probe.php"', sim_get="nepoznat=1"): return False
+
+        # poseban log fajl: dogadjaj ide tamo, ne u error_log
+        sep_log = os.path.join(test_dir, "gate_events.log")
+        if not execute_test("monitor", probe_path, "BODY-OK", 0, expected_event="unknown_parameter", sim_get="nepoznat=1", log_file=sep_log): return False
+
         return True
     finally:
         shutil.rmtree(test_dir, ignore_errors=True)
 
+
+def run_http_smoke(temp_output_path):
+    """HTTP smoke preko ugradjenog php -S servera (SAPI cli-server = web): status, telo, Content-Length, metode."""
+    test_dir = tempfile.mkdtemp(prefix="aceshrug_http_")
+    proc = None
+    try:
+        app_dir = os.path.join(test_dir, "app"); ace_dir = os.path.join(test_dir, "ace")
+        os.makedirs(app_dir); os.makedirs(ace_dir)
+        probe = b"<?php echo 'BODY-OK';"
+        with open(os.path.join(app_dir, "probe.php"), "wb") as f: f.write(probe)
+        with open(os.path.join(app_dir, "other.php"), "wb") as f: f.write(b"<?php echo 'OTHER';")
+        shutil.copy(os.path.join(temp_output_path, "gate.php"), os.path.join(ace_dir, "gate.php"))
+        man = {"format_version": 2, "engine_version": "0.3.6", "application_id": "http_smoke",
+               "generated_at": datetime.now(timezone.utc).isoformat(), "mode": "enforcement", "app_root": app_dir,
+               "unknown_policy": {"GET": "allow_with_signal", "POST": "block", "COOKIE": "allow_with_signal"},
+               "ignore_cookie_prefixes": [], "log_file": None,
+               "routes": {"probe.php": {"type": "ENTRYPOINT", "status": "confirmed", "sapi": "web", "methods": ["GET"],
+                                        "sha256": hashlib.sha256(probe).hexdigest(), "params": {"GET": {}, "POST": {}, "COOKIE": {}}}},
+               "includes": {}}
+        with open(os.path.join(ace_dir, "manifest.php"), "w") as f:
+            f.write("<?php\nreturn " + python_to_php_array(man) + ";\n")
+        sk = socket.socket(); sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]; sk.close()
+        events = os.path.join(test_dir, "events.log")
+        proc = subprocess.Popen(['php', '-S', f'127.0.0.1:{port}', '-t', app_dir,
+                                 f'-dauto_prepend_file={os.path.join(ace_dir, "gate.php")}', f'-derror_log={events}'],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.2).close(); break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            print("[-] HTTP smoke: php -S nije startovao"); return False
+
+        def req(method, path):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request(method, path)
+            r = c.getresponse(); body = r.read(); hdr = r.getheader("Content-Length"); c.close()
+            return r.status, body, hdr
+
+        cases = [
+            ("GET", "/probe.php", 200, b"BODY-OK"),
+            ("HEAD", "/probe.php", 200, b""),          # HEAD = GET
+            ("PUT", "/probe.php", 404, b""),           # metoda van ugovora -> SHRUG
+            ("GET", "/other.php", 404, b""),           # neregistrovana ruta -> SHRUG
+        ]
+        for m, pth, st, body in cases:
+            got_st, got_body, cl = req(m, pth)
+            if got_st != st or (body and body not in got_body) or (not body and got_body != b""):
+                print(f"[-] HTTP smoke fail: {m} {pth}: ocekivano {st}/{body!r}, dobijeno {got_st}/{got_body[:60]!r}"); return False
+            if st == 404 and cl != "0":
+                print(f"[-] HTTP smoke fail: {m} {pth}: SHRUG mora imati Content-Length: 0, dobijeno {cl}"); return False
+        log = open(events, encoding="utf-8", errors="ignore").read() if os.path.exists(events) else ""
+        for ev in ('"event":"method_not_allowed"', '"event":"unregistered_route"', '"method":"PUT"'):
+            if ev not in log:
+                print(f"[-] HTTP smoke fail: nedostaje dogadjaj {ev}"); return False
+        if '"method":"HEAD"' in log:
+            print("[-] HTTP smoke fail: HEAD je dao signal, a GET je dozvoljen"); return False
+        return True
+    finally:
+        if proc:
+            proc.terminate()
+            try: proc.wait(timeout=5)
+            except Exception: proc.kill()
+        shutil.rmtree(test_dir, ignore_errors=True)
+
 def main():
-    parser = argparse.ArgumentParser(description="ACESHRUG Universal Builder v0.3.5")
+    parser = argparse.ArgumentParser(description="ACESHRUG Universal Builder v0.3.6")
     parser.add_argument("--input", help="Ulazni direktorijum aplikacije (read-only)")
     parser.add_argument("--output", required=True, help="Izlazni ACESHRUG direktorijum (symlink baza)")
     parser.add_argument("--php-user", default="www-data", help="Sistemski korisnik za pool.conf")
@@ -938,6 +1081,7 @@ def main():
     parser.add_argument("--reload", type=reload_spec, metavar="apache|fpm:SERVIS", help="Posle uspesne aktivacije uradi graceful reload (apache) ili systemctl reload SERVIS")
     parser.add_argument("--exclude", action="append", default=[], metavar="PUTANJA", help="Direktorijum ili fajl (relativno na --input) koji ne ulazi u manifest; ponavlja se")
     parser.add_argument("--include-unreadable", action="store_true", help="Ne preskači fajlove koje --php-user ne može da pročita (podrazumevano se preskaču)")
+    parser.add_argument("--log-file", metavar="PUTANJA", help="Gate piše signale u ovaj fajl (apsolutna putanja, van --input), odvojeno od grešaka aplikacije")
     parser.add_argument("--decisions", help="Fajl sa ljudskim odlukama (podrazumevano: <output>.decisions.json)")
     parser.add_argument("--export-decisions", action="store_true", help="Napravi decisions fajl iz trenutno aktivnog manifesta i izadji")
 
@@ -1023,6 +1167,16 @@ def main():
             for e in derrs:
                 print(f"    - {e}")
             sys.exit(1)
+
+        if args.log_file:
+            lf = os.path.abspath(args.log_file)
+            if not os.path.isabs(args.log_file) or lf.startswith(input_path.rstrip("/") + "/"):
+                print("[-] Greška: --log-file mora biti apsolutna putanja van --input.")
+                sys.exit(1)
+            if not os.path.isdir(os.path.dirname(lf)):
+                print(f"[-] Greška: direktorijum za --log-file ne postoji: {os.path.dirname(lf)}")
+                sys.exit(1)
+            args.log_file = lf
 
         excludes = []
         for e in args.exclude:
@@ -1118,7 +1272,7 @@ def main():
 
             report_path = os.path.join(temp_output_path, "REPORT.md")
             with open(report_path, "w", encoding="utf-8") as rep:
-                rep.write("# ACESHRUG Universal Analysis Report (v0.3.5)\n\n")
+                rep.write("# ACESHRUG Universal Analysis Report (v0.3.6)\n\n")
                 rep.write(f"- **Scan Date:** {datetime.now(timezone.utc).isoformat()}\n")
                 rep.write(f"- **Ukupno PHP fajlova:** {len(all_files)}\n")
                 rep.write(f"- **Entrypoint ruta:** {len(routes)}\n")
@@ -1166,7 +1320,7 @@ def main():
 
             manifest_data = {
                 "format_version": 2,
-                "engine_version": "0.3.5",
+                "engine_version": "0.3.6",
                 "application_id": os.path.basename(input_path),
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "mode": decisions.get("mode", "monitor"),
@@ -1176,6 +1330,8 @@ def main():
                     "POST": "block",
                     "COOKIE": "allow_with_signal"
                 }, **(decisions.get("unknown_policy") or {})),
+                "ignore_cookie_prefixes": decisions.get("ignore_cookie_prefixes", DEFAULT_IGNORE_COOKIES),
+                "log_file": args.log_file,
                 "routes": routes,
                 "includes": includes
             }
@@ -1220,6 +1376,8 @@ php_admin_flag[expose_php] = Off
 
             if not run_smoke_test(temp_output_path):
                 raise RuntimeError("Smoke test neuspešan.")
+            if not run_http_smoke(temp_output_path):
+                raise RuntimeError("HTTP smoke test neuspešan.")
 
             if os.geteuid() == 0:
                 try:
@@ -1261,7 +1419,7 @@ php_admin_flag[expose_php] = Off
                     if old_v != active_target and os.path.exists(os.path.join(old_v, ".aceshrug-generated")):
                         shutil.rmtree(old_v)
 
-            print(f"[✔] ACESHRUG v0.3.5 uspešno generisan i aktiviran preko symlink-a: {output_path}")
+            print(f"[✔] ACESHRUG v0.3.6 uspešno generisan i aktiviran preko symlink-a: {output_path}")
 
             if decisions_dirty:
                 save_decisions(decisions, decisions_path)

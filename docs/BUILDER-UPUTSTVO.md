@@ -1,4 +1,4 @@
-# ACESHRUG builder: uputstvo (v0.3.5)
+# ACESHRUG builder: uputstvo (v0.3.6)
 
 Builder analizira PHP aplikaciju i u direktorijumu **van webroot-a** pravi gatekeeper (`gate.php`), ugovor (`manifest.php`), šablon php-fpm pool-a (`pool.conf`) i izveštaj (`REPORT.md`). **Kod aplikacije ostaje netaknut**: gate se uključuje preko `auto_prepend_file`.
 
@@ -43,6 +43,7 @@ sudo python3 builder/aceshrug_build.py \
 | `--reload apache` / `--reload fpm:SERVIS` | posle uspešne aktivacije ili rollback-a: `apache2ctl graceful`, odnosno `systemctl reload SERVIS` (npr. `fpm:php8.3-fpm`) |
 | `--exclude PUTANJA` | direktorijum ili fajl (relativno na `--input`) koji ne ulazi u manifest; ponavlja se |
 | `--include-unreadable` | ne preskače fajlove koje `--php-user` ne može da pročita (podrazumevano se preskaču) |
+| `--log-file PUTANJA` | gate piše signale u ovaj fajl (apsolutna putanja, van `--input`), odvojeno od grešaka aplikacije; bez nje signali idu u `error_log` |
 | `--export-decisions` | pravi decisions fajl iz trenutno aktivnog manifesta i izlazi (`--input` nije potreban) |
 | `--strict` | odbija aktivaciju dok postoji ijedna `auto` stavka |
 | `--accept-reclassified` | u enforcement režimu ipak aktivira kada se odluka za rutu odnosi na fajl koji je sada include |
@@ -78,12 +79,12 @@ sudo python3 builder/aceshrug_build.py \
 ```apache
 <Directory /var/www/html/app>
     php_admin_value auto_prepend_file /etc/aceshrug/app/gate.php
-    php_admin_value error_log /var/log/aceshrug/app.log
-    php_admin_flag  log_errors on
 </Directory>
 ```
+Signale gate piše u fajl iz `--log-file` (od v0.3.6), pa greške aplikacije ostaju u Apache error logu i ne mešaju se sa signalima. Ranija varijanta sa `php_admin_value error_log /var/log/aceshrug/app.log` i dalje radi bez `--log-file`, ali tada u isti fajl idu i `PHP Deprecated`/`Warning` poruke aplikacije.
 ```bash
 sudo mkdir -p /var/log/aceshrug && sudo chown www-data:www-data /var/log/aceshrug
+# build sa: --log-file /var/log/aceshrug/app.log
 sudo a2enconf aceshrug-app && sudo apache2ctl configtest && sudo systemctl reload apache2
 ```
 Vhost se ne dira. `php_admin_*` ne mogu da pregaze ni aplikacija ni `.htaccess`.
@@ -151,6 +152,17 @@ sudo grep -h 'ACESHRUG-EVENT' /var/log/aceshrug/app.log | sed 's/.*\[ACESHRUG-EV
 **Cilj:** legitiman saobraćaj daje nula signala.
 
 ---
+
+### Kolačići (od v0.3.6)
+- **Sesijski kolačić** (`session.name`, obično `PHPSESSID`) je uvek poznat i ne daje signal. Proverava se samo oblik ID-a (`[A-Za-z0-9,-]`, do 256 znakova); drugačiji daje `session_cookie_invalid` (u enforcement režimu, na potvrđenoj ruti, blokada).
+- **Kolačići za praćenje** se tiho ignorišu po prefiksu. Podrazumevano: `_ga`, `_gid`, `_gat`, `_gcl`, `_fbp`. Lista se menja u decisions fajlu: `"ignore_cookie_prefixes": ["_ga", "_gid"]` (prazna lista = ništa se ne ignoriše).
+- Na terenu su `PHPSESSID` i `_ga*` činili 84% svih signala.
+
+### Polja događaja
+Svaki signal sadrži i `route` (relativna putanja fajla) i `method` (`GET`, `POST`, ..., `CLI`), pa se vidi koji fajl je napadnut.
+
+### Metode
+`HEAD` je dozvoljen svuda gde je dozvoljen `GET` (monitoring, provera linkova).
 
 ## 6. Blokeri
 
@@ -258,8 +270,22 @@ Pre aktivacije builder pravi izolovanu probnu aplikaciju i pokreće stvarni `gat
 | 15 | kolizija: GET `x` deklarisan, POST `x` odbačen | `$_REQUEST['x']` = GET vrednost |
 | 16 | kolizija: POST `x` deklarisan, GET `x` odbačen | `$_REQUEST['x']` = POST vrednost |
 | 17 | `request_order=PGC`, `x` u GET i POST, COOKIE `x` odbačen | `$_REQUEST['x']` = GET vrednost (poslednja po redosledu) |
+| 18 | kolačići: sesijski + `_ga*` | bez događaja |
+| 19 | nepoznat kolačić | `unknown_parameter`, bez signala za `PHPSESSID` |
+| 20 | loš session ID (monitor / enforcement) | `session_cookie_invalid` / blokada |
+| 21 | događaj | sadrži `"route":"probe.php"` |
+| 22 | `--log-file` | događaj u log fajlu, ne u `error_log` |
 
-Provereno je da build odbija gate sa namerno ubačenim kvarovima: bez signala, bez prepoznavanja ruta, bez provere hash-a, monitor koji blokira, `rejected` koji blokira u monitoru, ignorisanje statusa, nikad ne blokira, `null` koji briše u monitoru, `null` koji nikad ne briše, `$_REQUEST` koji ostaje netaknut, `$_REQUEST` koji gleda samo prisustvo ključa (stara v0.3.2 logika), obrnut redosled izvora, ignorisan `request_order`, parametarski prekršaj bez blokade.
+**HTTP smoke** (od v0.3.6, ugrađeni `php -S`, enforcement, potvrđena ruta sa `GET`):
+
+| Zahtev | Očekivano |
+|---|---|
+| `GET /probe.php` | 200, telo |
+| `HEAD /probe.php` | 200, bez signala |
+| `PUT /probe.php` | 404, prazno, `Content-Length: 0`, `method_not_allowed` sa `"method":"PUT"` |
+| `GET /other.php` | 404, prazno, `Content-Length: 0`, `unregistered_route` |
+
+Provereno je da build odbija gate sa namerno ubačenim kvarovima: bez signala, bez prepoznavanja ruta, bez provere hash-a, monitor koji blokira, `rejected` koji blokira u monitoru, ignorisanje statusa, nikad ne blokira, `null` koji briše u monitoru, `null` koji nikad ne briše, `$_REQUEST` koji ostaje netaknut, `$_REQUEST` koji gleda samo prisustvo ključa (stara v0.3.2 logika), obrnut redosled izvora, ignorisan `request_order`, parametarski prekršaj bez blokade, bez `HEAD` pravila, sesijski kolačić kao nepoznat, bez ignorisanih prefiksa, svi kolačići ignorisani, bez provere session ID-a, bez rute u događaju, bez log fajla, bez `Content-Length: 0`, sve metode dozvoljene.
 
 ---
 

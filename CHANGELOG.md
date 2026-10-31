@@ -2,7 +2,16 @@
 
 Verzije builder-a (`builder/aceshrug_build.py`). Svaka verzija je pregledana i pokrenuta. Od v0.2.11 nadalje provera uključuje i testove sa namerno pokvarenim gate-om, koji proveravaju da smoke test zaista hvata kvar.
 
-## v0.3.5 (trenutna)
+## v0.3.6 (trenutna)
+Na osnovu prvog dana monitor režima na terenu (458 signala, uključujući stvarne napade sa interneta).
+- **Kolačići:** sesijski kolačić (`session.name`) je uvek poznat, uz proveru oblika ID-a (`session_cookie_invalid`). Kolačići za praćenje (`_ga`, `_gid`, `_gat`, `_gcl`, `_fbp`) se tiho ignorišu po prefiksu; lista se menja preko `ignore_cookie_prefixes` u decisions fajlu. Na terenu su ovi kolačići bili 84% signala.
+- **`HEAD` = `GET`:** `HEAD` je dozvoljen gde god je dozvoljen `GET`. Ranije bi enforcement blokirao monitoring.
+- **Događaj nosi `route` i `method`**, pa se vidi koji fajl je pogođen.
+- **`--log-file PUTANJA`:** gate piše signale u sopstveni fajl, odvojeno od grešaka aplikacije (`PHP Deprecated` i slično). Ako upis ne uspe, piše u `error_log`.
+- **HTTP smoke test** preko ugrađenog `php -S` servera: status, telo, `Content-Length: 0` kod SHRUG-a, `HEAD`, metoda van ugovora, neregistrovana ruta.
+- Provereno sa 9 namerno pokvarenih gate-ova (bez HEAD pravila, sesijski kolačić kao nepoznat, bez/sa svim ignorisanim prefiksima, bez provere session ID-a, bez rute u događaju, bez log fajla, bez `Content-Length: 0`, sve metode dozvoljene): svi odbijeni.
+
+## v0.3.5
 - **Preskakanje nečitljivog:** fajlovi koje `--php-user` ne može da pročita ne ulaze u manifest (provera kao taj korisnik, fail-closed) i navode se u REPORT-u. Zahtev sa terena: namerno zaključani direktorijumi (`000`) više ne traže ručno brisanje iz manifesta. Opt-out: `--include-unreadable`.
 - **`--exclude PUTANJA`:** direktorijum ili fajl koji ne ulazi u manifest; ponavlja se. Proverava se da postoji i da je unutar `--input`.
 - Gate nepromenjen.

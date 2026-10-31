@@ -8,7 +8,7 @@
 
 [English](README.md)
 
-Status: **v0.3.5, eksperimentalno.** Monitor režim je proveren na produkcionoj PHP aplikaciji (Apache + mod_php, PHP 8.3). Enforcement režim još nije za produkciju.
+Status: **v0.3.6, eksperimentalno.** Monitor režim je proveren na produkcionoj PHP aplikaciji (Apache + mod_php, PHP 8.3). Enforcement režim još nije za produkciju.
 
 ---
 
